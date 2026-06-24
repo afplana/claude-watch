@@ -11,13 +11,13 @@ import hook
 
 class NormalizeTests(unittest.TestCase):
     def test_project_derived_from_cwd(self):
-        rec = hook.normalize({"hook_event_name": "SessionStart", "cwd": "/Users/me/stash/farecalculator"})
-        self.assertEqual(rec["project"], "farecalculator")
+        rec = hook.normalize({"hook_event_name": "SessionStart", "cwd": "/Users/me/stash/web-app"})
+        self.assertEqual(rec["project"], "web-app")
         self.assertEqual(rec["event"], "SessionStart")
 
     def test_trailing_slash_cwd(self):
-        rec = hook.normalize({"hook_event_name": "Stop", "cwd": "/Users/me/quote-service/"})
-        self.assertEqual(rec["project"], "quote-service")
+        rec = hook.normalize({"hook_event_name": "Stop", "cwd": "/Users/me/api-service/"})
+        self.assertEqual(rec["project"], "api-service")
 
     def test_missing_cwd_is_unknown(self):
         rec = hook.normalize({"hook_event_name": "Stop"})

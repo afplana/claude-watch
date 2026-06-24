@@ -7,7 +7,7 @@ notifications** for your Claude Code sessions.
   session (project · status · last few actions).
 - Desktop notification when a session **finishes** (✅ "your turn") or **needs
   permission** (🟡). Permission alerts include the actual pending command —
-  e.g. `🟡 quote-service — approve?` / `Bash: rm -rf build/` — correlated from
+  e.g. `🟡 api-service — approve?` / `Bash: rm -rf build/` — correlated from
   the `PreToolUse` that triggered the prompt, since Claude's own message is
   generic ("Claude needs your permission").
 - 100% local. No network, no analytics, no phone-home. Everything lives in
@@ -15,7 +15,7 @@ notifications** for your Claude Code sessions.
 
 ## Why it can't get Santa-blocked
 
-Masko shipped a compiled `hook-sender` binary, which your company's Santa "Team ID
+Masko shipped a compiled `hook-sender` binary, which a corporate Santa "Team ID
 rule" blocked. claude-watch ships **no binaries**. Both scripts run under the
 Apple-signed system interpreter `/usr/bin/python3` (which already bundles PyObjC),
 so Santa evaluates the approved interpreter, not a new binary. Notifications go
@@ -68,7 +68,7 @@ Claude Code sessions so they pick up the new hooks.
 
 ```sh
 /usr/bin/python3 cw.py stats                      # sessions/day, tool usage, top files, active time
-/usr/bin/python3 cw.py stats --project farecalculator --since 2026-06-01
+/usr/bin/python3 cw.py stats --project web-app --since 2026-06-01
 /usr/bin/python3 cw.py search --tool Bash --text mvn --limit 20
 /usr/bin/python3 cw.py search --event Stop --since 2026-06-20
 ```

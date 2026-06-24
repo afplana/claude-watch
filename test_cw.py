@@ -15,20 +15,20 @@ def ev(ts, project, event, tool="", detail="", session="s1"):
 
 
 SAMPLE = [
-    ev("2026-06-20T09:00:00", "farecalc", "SessionStart", session="a"),
-    ev("2026-06-20T09:00:05", "farecalc", "UserPromptSubmit", detail="fix bug", session="a"),
-    ev("2026-06-20T09:00:10", "farecalc", "PreToolUse", "Edit", "Fare.kt", session="a"),
-    ev("2026-06-20T09:01:10", "farecalc", "PreToolUse", "Bash", "mvn test", session="a"),
-    ev("2026-06-20T09:02:00", "farecalc", "Stop", session="a"),
-    ev("2026-06-21T11:00:00", "quote-svc", "PreToolUse", "Edit", "Quote.kt", session="b"),
-    ev("2026-06-21T11:00:30", "quote-svc", "Notification", detail="needs permission", session="b"),
+    ev("2026-06-20T09:00:00", "web-app", "SessionStart", session="a"),
+    ev("2026-06-20T09:00:05", "web-app", "UserPromptSubmit", detail="fix bug", session="a"),
+    ev("2026-06-20T09:00:10", "web-app", "PreToolUse", "Edit", "Service.kt", session="a"),
+    ev("2026-06-20T09:01:10", "web-app", "PreToolUse", "Bash", "mvn test", session="a"),
+    ev("2026-06-20T09:02:00", "web-app", "Stop", session="a"),
+    ev("2026-06-21T11:00:00", "api-service", "PreToolUse", "Edit", "Handler.kt", session="b"),
+    ev("2026-06-21T11:00:30", "api-service", "Notification", detail="needs permission", session="b"),
 ]
 
 
 class MatchTests(unittest.TestCase):
     def test_project_filter(self):
-        self.assertTrue(cw.match_event(SAMPLE[0], project="farecalc"))
-        self.assertFalse(cw.match_event(SAMPLE[0], project="quote-svc"))
+        self.assertTrue(cw.match_event(SAMPLE[0], project="web-app"))
+        self.assertFalse(cw.match_event(SAMPLE[0], project="api-service"))
 
     def test_tool_filter(self):
         self.assertTrue(cw.match_event(SAMPLE[2], tool="Edit"))
@@ -58,7 +58,7 @@ class StatsTests(unittest.TestCase):
         self.assertEqual(self.s["tool_frequency"], {"Edit": 2, "Bash": 1})
 
     def test_top_files_from_edits(self):
-        self.assertEqual(self.s["top_files"], {"Fare.kt": 1, "Quote.kt": 1})
+        self.assertEqual(self.s["top_files"], {"Service.kt": 1, "Handler.kt": 1})
 
     def test_prompts_and_permissions(self):
         self.assertEqual(self.s["prompts"], 1)
@@ -69,7 +69,7 @@ class StatsTests(unittest.TestCase):
         self.assertEqual(self.s["total_active_seconds"], 150.0)
 
     def test_sessions_per_project(self):
-        self.assertEqual(self.s["sessions_per_project"], {"farecalc": 1, "quote-svc": 1})
+        self.assertEqual(self.s["sessions_per_project"], {"web-app": 1, "api-service": 1})
 
 
 class DurationTests(unittest.TestCase):

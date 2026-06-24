@@ -14,11 +14,11 @@ import bar
 class NotificationAlertTests(unittest.TestCase):
     def test_permission_with_pending_shows_command(self):
         title, text, sound = bar.notification_alert(
-            "quote-service", "Claude needs your permission",
+            "api-service", "Claude needs your permission",
             {"tool": "Bash", "detail": "rm -rf build/ && mvn clean install"},
         )
         self.assertIn("approve", title.lower())
-        self.assertIn("quote-service", title)
+        self.assertIn("api-service", title)
         self.assertEqual(text, "Bash: rm -rf build/ && mvn clean install")
         self.assertEqual(sound, "Ping")
 

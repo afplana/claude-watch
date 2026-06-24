@@ -234,15 +234,15 @@ def build_menu(app):
 
 def demo_feed(path):
     script = [
-        ("SessionStart", "farecalculator", "", ""),
-        ("UserPromptSubmit", "farecalculator", "", "fix the surge rounding bug"),
-        ("PreToolUse", "farecalculator", "Read", "FareCalculator.kt"),
-        ("PreToolUse", "farecalculator", "Edit", "FareCalculator.kt"),
-        ("SessionStart", "quote-service", "", ""),
-        ("PreToolUse", "quote-service", "Bash", "rm -rf build/ && mvn clean install"),
-        ("Notification", "quote-service", "", "Claude needs your permission"),
-        ("PreToolUse", "farecalculator", "Bash", "mvn -q test"),
-        ("Stop", "farecalculator", "", ""),
+        ("SessionStart", "web-app", "", ""),
+        ("UserPromptSubmit", "web-app", "", "fix the rounding bug"),
+        ("PreToolUse", "web-app", "Read", "Service.kt"),
+        ("PreToolUse", "web-app", "Edit", "Service.kt"),
+        ("SessionStart", "api-service", "", ""),
+        ("PreToolUse", "api-service", "Bash", "rm -rf build/ && mvn clean install"),
+        ("Notification", "api-service", "", "Claude needs your permission"),
+        ("PreToolUse", "web-app", "Bash", "mvn -q test"),
+        ("Stop", "web-app", "", ""),
     ]
     for event, project, tool, detail in script:
         rec = {
