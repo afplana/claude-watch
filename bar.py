@@ -73,6 +73,22 @@ def describe(ev):
     return event
 
 
+def notification_alert(project, message, pending):
+    """Decide the (title, text, sound) for a Claude Code Notification event.
+
+    For permission prompts the message itself is generic ("Claude needs your
+    permission"), so we surface the pending tool call captured from the preceding
+    PreToolUse — e.g. body "Bash: rm -rf build". Pure function, unit-tested.
+    """
+    if "permission" in (message or "").lower():
+        if pending and pending.get("tool"):
+            detail = pending.get("detail") or ""
+            text = "%s: %s" % (pending["tool"], detail) if detail else pending["tool"]
+            return ("🟡 %s — approve?" % project, text, "Ping")
+        return ("🟡 %s — needs permission" % project, message, "Ping")
+    return ("🟡 %s" % project, message or "Needs your attention.", "Submarine")
+
+
 def notify(title, text, sound="Glass"):
     """Display a macOS notification via osascript (argv-passed = injection-safe)."""
     try:
@@ -115,6 +131,7 @@ def events_file_for(day):
 
 # ------------------------------------------------- state mutation (takes `app`)
 def apply_event(app, ev, notify_new):
+    event = ev["event"]
     sid = ev.get("session") or "(none)"
     sess = app.sessions.get(sid)
     if sess is None:
@@ -123,22 +140,29 @@ def apply_event(app, ev, notify_new):
             "status": ACTIVE,
             "events": deque(maxlen=MAX_EVENTS_PER_SESSION),
             "last_ts": ev.get("ts", ""),
+            "pending": None,
         }
         app.sessions[sid] = sess
     if ev.get("project"):
         sess["project"] = ev["project"]
-    status = event_status(ev["event"])
-    sess["status"] = status
+
+    # Track the tool call awaiting a result — i.e. what a permission prompt is for.
+    if event == "PreToolUse":
+        sess["pending"] = {"tool": ev.get("tool", ""), "detail": ev.get("detail", "")}
+    elif event == "PostToolUse":
+        sess["pending"] = None
+
+    sess["status"] = event_status(event)
     sess["last_ts"] = ev.get("ts", sess["last_ts"])
-    if ev["event"] not in ("SessionStart", "SessionEnd"):
+    if event not in ("SessionStart", "SessionEnd"):
         sess["events"].append(ev)
 
     if notify_new and not app.config.get("muted"):
         project = sess["project"]
-        if status == DONE and ev["event"] == "Stop":
+        if event == "Stop":
             notify("✅ %s" % project, "Claude finished — your turn.")
-        elif status == WAITING:
-            notify("🟡 %s" % project, ev.get("detail") or "Needs your attention.", sound="Ping")
+        elif event == "Notification":
+            notify(*notification_alert(project, ev.get("detail", ""), sess.get("pending")))
 
 
 def consume(app, notify_new):
@@ -215,9 +239,9 @@ def demo_feed(path):
         ("PreToolUse", "farecalculator", "Read", "FareCalculator.kt"),
         ("PreToolUse", "farecalculator", "Edit", "FareCalculator.kt"),
         ("SessionStart", "quote-service", "", ""),
-        ("PreToolUse", "quote-service", "Bash", "mvn test"),
+        ("PreToolUse", "quote-service", "Bash", "rm -rf build/ && mvn clean install"),
+        ("Notification", "quote-service", "", "Claude needs your permission"),
         ("PreToolUse", "farecalculator", "Bash", "mvn -q test"),
-        ("Notification", "quote-service", "", "Claude needs permission to run rm"),
         ("Stop", "farecalculator", "", ""),
     ]
     for event, project, tool, detail in script:

@@ -32,7 +32,7 @@ def summarize_tool(tool_name, tool_input):
         path = tool_input.get("file_path") or tool_input.get("notebook_path") or ""
         return os.path.basename(path) if path else ""
     if tool_name == "Bash":
-        return _short(tool_input.get("command", ""))
+        return _short(tool_input.get("command", ""), 120)  # keep enough to vet an approval
     if tool_name in ("Grep", "Glob"):
         return _short(tool_input.get("pattern", ""))
     if tool_name == "Task":

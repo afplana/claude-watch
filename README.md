@@ -6,7 +6,10 @@ notifications** for your Claude Code sessions.
 - 🛰️ menu bar icon shows how many sessions are active; the dropdown lists each
   session (project · status · last few actions).
 - Desktop notification when a session **finishes** (✅ "your turn") or **needs
-  permission / your attention** (🟡).
+  permission** (🟡). Permission alerts include the actual pending command —
+  e.g. `🟡 quote-service — approve?` / `Bash: rm -rf build/` — correlated from
+  the `PreToolUse` that triggered the prompt, since Claude's own message is
+  generic ("Claude needs your permission").
 - 100% local. No network, no analytics, no phone-home. Everything lives in
   `~/.claude-watch/`.
 
