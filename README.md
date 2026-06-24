@@ -1,25 +1,35 @@
 # claude-watch
 
-A tiny, local, Santa-safe replacement for Masko: a **menu bar live feed + desktop
-notifications** for your Claude Code sessions.
+A tiny, local, Santa-safe replacement for Masko: a **menu bar live feed + pop-up
+alerts** for your Claude Code sessions.
 
 - 🛰️ menu bar icon shows how many sessions are active; the dropdown lists each
-  session (project · status · last few actions).
-- Desktop notification when a session **finishes** (✅ "your turn") or **needs
-  permission** (🟡). Permission alerts include the actual pending command —
-  e.g. `🟡 api-service — approve?` / `Bash: rm -rf build/` — correlated from
-  the `PreToolUse` that triggered the prompt, since Claude's own message is
-  generic ("Claude needs your permission").
+  session (project · status · last few actions). A session stops counting as
+  active after 10 min idle, so closed CLI instances don't linger.
+- A **floating banner** (top-right, auto-dismiss after 8s, click to dismiss)
+  when a session **finishes** (✅ "your turn") or **needs permission** (🟡).
+  Permission alerts include the actual pending command — e.g.
+  `🟡 api-service — approve?` / `Bash: rm -rf build/` — correlated from the
+  `PreToolUse` that triggered the prompt, since Claude's own message is generic
+  ("Claude needs your permission").
 - 100% local. No network, no analytics, no phone-home. Everything lives in
   `~/.claude-watch/`.
+
+> **Why a custom banner instead of a real notification?** macOS system
+> notifications (`osascript display notification`) proved unreliable on recent
+> macOS — they're silently dropped or routed to Notification Center without a
+> banner, depending on hidden per-app settings. Since `bar.py` is already a full
+> native GUI app (that's how it draws the menu bar icon), it draws its own banner
+> window with AppKit — which can't be suppressed by notification settings and
+> needs no permissions. Run `/usr/bin/python3 bar.py --banner-test` to see one.
 
 ## Why it can't get Santa-blocked
 
 Masko shipped a compiled `hook-sender` binary, which a corporate Santa "Team ID
 rule" blocked. claude-watch ships **no binaries**. Both scripts run under the
 Apple-signed system interpreter `/usr/bin/python3` (which already bundles PyObjC),
-so Santa evaluates the approved interpreter, not a new binary. Notifications go
-through the system `/usr/bin/osascript`.
+so Santa evaluates the approved interpreter, not a new binary. Alerts are drawn
+as native AppKit windows — no external helpers.
 
 ## How it works
 
@@ -29,15 +39,15 @@ Claude Code hook ──stdin JSON──▶ hook.py ──append──▶ ~/.clau
                                                               ▼
                                                     bar.py (menu bar app)
                                                        ├─ live feed dropdown
-                                                       └─ osascript notifications
+                                                       └─ native floating banners
 ```
 
 - **`hook.py`** — registered for the relevant Claude Code hook events. Normalizes
   each payload and appends one NDJSON line. Pure capture; never blocks the agent,
   never writes to stdout, always exits 0.
 - **`bar.py`** — `NSStatusItem` menu bar app (PyObjC) that tails today's log,
-  tracks per-session state, renders the feed, and fires notifications. Started at
-  login by a LaunchAgent.
+  tracks per-session state, renders the feed, and draws floating banner windows
+  for finish/permission events. Started at login by a LaunchAgent.
 
 ## Install
 

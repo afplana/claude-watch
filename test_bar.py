@@ -7,6 +7,7 @@ Run:  /usr/bin/python3 test_bar.py
 """
 
 import unittest
+from datetime import datetime
 
 import bar
 
@@ -48,6 +49,36 @@ class StatusTests(unittest.TestCase):
         self.assertEqual(bar.event_status("Notification"), bar.WAITING)
         self.assertEqual(bar.event_status("SessionEnd"), bar.ENDED)
         self.assertEqual(bar.event_status("PreToolUse"), bar.ACTIVE)
+
+
+class ActivityAgingTests(unittest.TestCase):
+    def setUp(self):
+        self.now = datetime(2026, 6, 24, 13, 30, 0)
+
+    def _sess(self, status, last_ts):
+        return {"status": status, "last_ts": last_ts}
+
+    def test_recent_active_session_counts(self):
+        s = self._sess(bar.ACTIVE, "2026-06-24T13:29:00")  # 1 min ago
+        self.assertTrue(bar.is_active(s, self.now))
+        self.assertEqual(bar.display_emoji(s, self.now), bar.STATUS_EMOJI[bar.ACTIVE])
+
+    def test_stale_active_session_drops_off(self):
+        s = self._sess(bar.ACTIVE, "2026-06-24T09:48:00")  # hours ago (the s1 case)
+        self.assertFalse(bar.is_active(s, self.now))
+        self.assertEqual(bar.display_emoji(s, self.now), bar.STATUS_EMOJI[bar.ENDED])
+
+    def test_done_never_counts_active(self):
+        s = self._sess(bar.DONE, "2026-06-24T13:29:59")
+        self.assertFalse(bar.is_active(s, self.now))
+        self.assertEqual(bar.display_emoji(s, self.now), bar.STATUS_EMOJI[bar.DONE])
+
+    def test_waiting_recent_counts(self):
+        s = self._sess(bar.WAITING, "2026-06-24T13:28:00")
+        self.assertTrue(bar.is_active(s, self.now))
+
+    def test_bad_timestamp_is_not_active(self):
+        self.assertFalse(bar.is_active(self._sess(bar.ACTIVE, "garbage"), self.now))
 
 
 class DescribeTests(unittest.TestCase):

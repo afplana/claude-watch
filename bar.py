@@ -19,20 +19,38 @@ logic lives in module-level functions; the delegate only carries true selectors.
 
 import json
 import os
-import subprocess
 import sys
 import threading
 import time
+import warnings
 from collections import deque
 from datetime import datetime
+
+# Harmless PyObjC noise when bridging CGColor for the banner's layer.
+warnings.filterwarnings("ignore", message="PyObjCPointer created")
 
 from AppKit import (
     NSApplication,
     NSApplicationActivationPolicyAccessory,
+    NSBackingStoreBuffered,
+    NSButton,
+    NSColor,
+    NSFont,
+    NSLineBreakByWordWrapping,
     NSMenu,
     NSMenuItem,
+    NSPanel,
+    NSScreen,
+    NSSound,
     NSStatusBar,
+    NSStatusWindowLevel,
+    NSTextField,
     NSVariableStatusItemLength,
+    NSView,
+    NSWindowCollectionBehaviorCanJoinAllSpaces,
+    NSWindowCollectionBehaviorStationary,
+    NSWindowStyleMaskBorderless,
+    NSWindowStyleMaskNonactivatingPanel,
 )
 from Foundation import NSObject, NSTimer
 
@@ -49,8 +67,35 @@ ICON = "🛰️"
 ACTIVE, WAITING, DONE, ENDED = "active", "waiting", "done", "ended"
 STATUS_EMOJI = {ACTIVE: "🟢", WAITING: "🟡", DONE: "✅", ENDED: "⚪️"}
 
+# A session with no activity for this long is no longer counted as "active".
+# Closed CLI instances rarely send SessionEnd, so without this they'd linger forever.
+IDLE_SECONDS = 600
+
 
 # ----------------------------------------------------------------- pure helpers
+def parse_ts(ts):
+    try:
+        return datetime.fromisoformat(ts)
+    except (ValueError, TypeError):
+        return None
+
+
+def is_active(sess, now, idle=IDLE_SECONDS):
+    """A session counts as active only if running/waiting AND recently active."""
+    if sess.get("status") not in (ACTIVE, WAITING):
+        return False
+    t = parse_ts(sess.get("last_ts", ""))
+    return t is not None and (now - t).total_seconds() <= idle
+
+
+def display_emoji(sess, now, idle=IDLE_SECONDS):
+    if sess.get("status") == DONE:
+        return STATUS_EMOJI[DONE]
+    if is_active(sess, now, idle):
+        return STATUS_EMOJI[sess["status"]]
+    return STATUS_EMOJI[ENDED]  # stale / idle / ended
+
+
 def event_status(event):
     if event in ("Stop", "SubagentStop"):
         return DONE
@@ -89,23 +134,98 @@ def notification_alert(project, message, pending):
     return ("🟡 %s" % project, message or "Needs your attention.", "Submarine")
 
 
-def notify(title, text, sound="Glass"):
-    """Display a macOS notification via osascript (argv-passed = injection-safe)."""
-    try:
-        subprocess.Popen(
-            [
-                "/usr/bin/osascript",
-                "-e", "on run argv",
-                "-e", "display notification (item 1 of argv) with title (item 2 of argv) "
-                      "subtitle (item 3 of argv) sound name (item 4 of argv)",
-                "-e", "end run",
-                text, title, "claude-watch", sound,
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-    except Exception:
-        pass
+BANNER_W, BANNER_H, BANNER_MARGIN, BANNER_GAP = 360, 108, 16, 8
+BANNER_SECONDS = 8.0
+
+
+class BannerController(NSObject):
+    """Owns one floating banner window + its auto-dismiss timer.
+
+    Kept in app.banners so it isn't garbage-collected while on screen.
+    `dismiss_` is the only Objective-C selector (1 arg → valid arity).
+    """
+
+    def dismiss_(self, _sender):
+        if getattr(self, "timer", None):
+            self.timer.invalidate()
+            self.timer = None
+        if getattr(self, "panel", None):
+            self.panel.orderOut_(None)
+        if self in self.app.banners:
+            self.app.banners.remove(self)
+
+
+def _banner_label(frame, text, size, bold, white):
+    tf = NSTextField.alloc().initWithFrame_(frame)
+    tf.setStringValue_(text)
+    tf.setBezeled_(False)
+    tf.setDrawsBackground_(False)
+    tf.setEditable_(False)
+    tf.setSelectable_(False)
+    tf.setTextColor_(NSColor.colorWithCalibratedWhite_alpha_(white, 1.0))
+    tf.setFont_(NSFont.boldSystemFontOfSize_(size) if bold else NSFont.systemFontOfSize_(size))
+    return tf
+
+
+def show_banner(app, title, body, sound=None):
+    """Draw our own notification banner (top-right), since macOS system
+    notifications don't render on this machine. Must run on the main thread."""
+    if not hasattr(app, "banners"):
+        app.banners = []
+
+    vf = NSScreen.mainScreen().visibleFrame()
+    index = len(app.banners)
+    x = vf.origin.x + vf.size.width - BANNER_W - BANNER_MARGIN
+    y = vf.origin.y + vf.size.height - BANNER_H - BANNER_MARGIN - index * (BANNER_H + BANNER_GAP)
+
+    style = NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel
+    panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+        ((x, y), (BANNER_W, BANNER_H)), style, NSBackingStoreBuffered, False)
+    panel.setLevel_(NSStatusWindowLevel)
+    panel.setOpaque_(False)
+    panel.setBackgroundColor_(NSColor.clearColor())
+    panel.setHasShadow_(True)
+    panel.setReleasedWhenClosed_(False)
+    panel.setBecomesKeyOnlyIfNeeded_(True)
+    panel.setCollectionBehavior_(
+        NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorStationary)
+
+    content = NSView.alloc().initWithFrame_(((0, 0), (BANNER_W, BANNER_H)))
+    content.setWantsLayer_(True)
+    content.layer().setCornerRadius_(14.0)
+    content.layer().setBackgroundColor_(
+        NSColor.colorWithCalibratedWhite_alpha_(0.13, 0.96).CGColor())
+    panel.setContentView_(content)
+
+    content.addSubview_(_banner_label(((18, BANNER_H - 42), (BANNER_W - 36, 28)), title, 17, True, 1.0))
+    body_tf = _banner_label(((18, 14), (BANNER_W - 36, BANNER_H - 52)), body, 13.5, False, 0.92)
+    body_tf.cell().setWraps_(True)
+    body_tf.cell().setLineBreakMode_(NSLineBreakByWordWrapping)
+    content.addSubview_(body_tf)
+
+    controller = BannerController.alloc().init()
+    controller.app = app
+    controller.panel = panel
+    controller.timer = None
+
+    # transparent full-size button → click anywhere to dismiss
+    btn = NSButton.alloc().initWithFrame_(((0, 0), (BANNER_W, BANNER_H)))
+    btn.setBordered_(False)
+    btn.setTransparent_(True)
+    btn.setTitle_("")
+    btn.setTarget_(controller)
+    btn.setAction_("dismiss:")
+    content.addSubview_(btn)
+
+    panel.orderFrontRegardless()
+    controller.timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+        BANNER_SECONDS, controller, "dismiss:", None, False)
+    app.banners.append(controller)
+
+    if sound:
+        snd = NSSound.soundNamed_(sound)
+        if snd:
+            snd.play()
 
 
 def load_config():
@@ -160,9 +280,9 @@ def apply_event(app, ev, notify_new):
     if notify_new and not app.config.get("muted"):
         project = sess["project"]
         if event == "Stop":
-            notify("✅ %s" % project, "Claude finished — your turn.")
+            show_banner(app, "✅ %s" % project, "Claude finished — your turn.", "Glass")
         elif event == "Notification":
-            notify(*notification_alert(project, ev.get("detail", ""), sess.get("pending")))
+            show_banner(app, *notification_alert(project, ev.get("detail", ""), sess.get("pending")))
 
 
 def consume(app, notify_new):
@@ -209,8 +329,9 @@ def add_item(menu, target, title, action=None, key=""):
 
 
 def build_menu(app):
+    now = datetime.now()
     sessions = ordered_sessions(app)
-    active = sum(1 for s in sessions if s["status"] in (ACTIVE, WAITING))
+    active = sum(1 for s in sessions if is_active(s, now))
     app.statusitem.button().setTitle_("%s %d" % (ICON, active) if active else ICON)
 
     menu = NSMenu.alloc().init()
@@ -220,7 +341,7 @@ def build_menu(app):
     if not sessions:
         add_item(menu, app, "  no sessions yet today")
     for sess in sessions[:MAX_SESSIONS_SHOWN]:
-        emoji = STATUS_EMOJI.get(sess["status"], "•")
+        emoji = display_emoji(sess, now)
         add_item(menu, app, "%s  %s" % (emoji, sess["project"]))
         for ev in list(sess["events"]):
             add_item(menu, app, "      %s" % describe(ev))
@@ -283,6 +404,10 @@ class AppDelegate(NSObject):
         self.timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             POLL_SECONDS, self, "tick:", None, True
         )
+
+        if "--banner-test" in sys.argv:
+            show_banner(self, "🟡 api-service — approve?",
+                        "Bash: rm -rf build/ && mvn clean install", "Ping")
 
     def tick_(self, _timer):
         if not self.demo:
