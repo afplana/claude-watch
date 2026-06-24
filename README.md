@@ -59,10 +59,28 @@ Claude Code sessions so they pick up the new hooks.
 /usr/bin/python3 bar.py --demo   # replays synthetic events into the feed
 ```
 
+## History & analytics CLI
+
+`cw.py` reads the event logs for searching and usage stats (read-only, pure stdlib):
+
+```sh
+/usr/bin/python3 cw.py stats                      # sessions/day, tool usage, top files, active time
+/usr/bin/python3 cw.py stats --project farecalculator --since 2026-06-01
+/usr/bin/python3 cw.py search --tool Bash --text mvn --limit 20
+/usr/bin/python3 cw.py search --event Stop --since 2026-06-20
+```
+
+`search` filters: `--project --tool --event --text --session --since --until --limit`.
+Handy alias: `alias cw='/usr/bin/python3 ~/stash/claude-watch/cw.py'`.
+
+Note: hooks capture *events*, not tokens/cost, so analytics cover activity
+(sessions, tools, files, active time) — not spend.
+
 ## Test
 
 ```sh
 /usr/bin/python3 test_hook.py
+/usr/bin/python3 test_cw.py
 ```
 
 ## Data & files
@@ -76,5 +94,5 @@ Claude Code sessions so they pick up the new hooks.
 
 ## Possible next steps
 
-The NDJSON log already contains everything needed to add **history/search** and
-**usage analytics** later without changing the capture layer.
+A local web dashboard (stdlib `http.server`) could layer a browsable, charted
+view on top of the same `cw.py` query functions.
