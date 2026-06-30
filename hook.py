@@ -42,10 +42,12 @@ def summarize_tool(tool_name, tool_input):
     return ""
 
 
-def normalize(raw):
+def normalize(raw, term=""):
     """Map a raw Claude Code hook payload to a flat event record.
 
-    Pure function (no I/O) so it can be unit-tested.
+    `term` is the TERM_PROGRAM of the terminal Claude runs in (captured in
+    main() from the environment); it lets the menu bar app raise that terminal
+    when you click an alert. Pure function (no I/O) so it can be unit-tested.
     """
     event = raw.get("hook_event_name", "Unknown")
     cwd = raw.get("cwd", "")
@@ -72,6 +74,7 @@ def normalize(raw):
         "event": event,
         "tool": tool,
         "detail": detail,
+        "term": term,
     }
 
 
@@ -87,7 +90,7 @@ def main():
         return  # nothing usable on stdin; stay invisible
     try:
         os.makedirs(DATA_DIR, exist_ok=True)
-        record = normalize(raw)
+        record = normalize(raw, os.environ.get("TERM_PROGRAM", ""))
         with open(events_path(), "a") as fh:
             fh.write(json.dumps(record) + "\n")
     except Exception as exc:  # never crash the agent

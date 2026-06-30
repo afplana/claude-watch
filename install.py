@@ -16,9 +16,25 @@ import sys
 from datetime import datetime
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-HOOK = os.path.join(HERE, "hook.py")
-BAR = os.path.join(HERE, "bar.py")
 PYTHON = "/usr/bin/python3"
+
+
+def _stable_dir():
+    """Where to point the hook + LaunchAgent so they survive upgrades.
+
+    Under Homebrew the scripts live in a versioned Cellar path; rewrite it to the
+    stable `opt/claude-watch/libexec` symlink so `brew upgrade` doesn't strand the
+    LaunchAgent. Outside Homebrew (manual clone) just use this directory.
+    """
+    if "/Cellar/" in HERE:
+        prefix = HERE.split("/Cellar/")[0]
+        return os.path.join(prefix, "opt", "claude-watch", "libexec")
+    return HERE
+
+
+STABLE_DIR = _stable_dir()
+HOOK = os.path.join(STABLE_DIR, "hook.py")
+BAR = os.path.join(STABLE_DIR, "bar.py")
 HOOK_COMMAND = '%s "%s"' % (PYTHON, HOOK)
 
 SETTINGS = os.path.expanduser("~/.claude/settings.json")

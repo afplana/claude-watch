@@ -91,5 +91,39 @@ class DescribeTests(unittest.TestCase):
             bar.describe({"event": "UserPromptSubmit", "tool": "", "detail": "hi"}), "prompt: hi")
 
 
+class MuteTests(unittest.TestCase):
+    def test_not_muted_by_default(self):
+        self.assertFalse(bar.is_muted({}, "web-app"))
+
+    def test_global_mute_silences_every_project(self):
+        cfg = {"muted": True}
+        self.assertTrue(bar.is_muted(cfg, "web-app"))
+        self.assertTrue(bar.is_muted(cfg, "api-service"))
+
+    def test_per_project_mute_only_targets_that_project(self):
+        cfg = {"muted": False, "muted_projects": ["api-service"]}
+        self.assertTrue(bar.is_muted(cfg, "api-service"))
+        self.assertFalse(bar.is_muted(cfg, "web-app"))
+
+    def test_toggle_project_mute_adds_and_removes(self):
+        cfg = {}
+        bar.toggle_project_mute(cfg, "web-app")
+        self.assertEqual(cfg["muted_projects"], ["web-app"])
+        bar.toggle_project_mute(cfg, "web-app")
+        self.assertEqual(cfg["muted_projects"], [])
+
+
+class TerminalTargetTests(unittest.TestCase):
+    def test_known_terminal_maps_to_app_names(self):
+        self.assertIn("Terminal", bar.terminal_app_names("Apple_Terminal"))
+        self.assertIn("iTerm2", bar.terminal_app_names("iTerm.app"))
+
+    def test_unknown_terminal_falls_back_to_raw_value(self):
+        self.assertEqual(bar.terminal_app_names("SomeFutureTerm"), ["SomeFutureTerm"])
+
+    def test_empty_terminal_yields_no_targets(self):
+        self.assertEqual(bar.terminal_app_names(""), [])
+
+
 if __name__ == "__main__":
     unittest.main()

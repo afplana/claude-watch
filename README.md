@@ -6,12 +6,18 @@ alerts** for your Claude Code sessions.
 - 🛰️ menu bar icon shows how many sessions are active; the dropdown lists each
   session (project · status · last few actions). A session stops counting as
   active after 10 min idle, so closed CLI instances don't linger.
-- A **floating banner** (top-right, auto-dismiss after 8s, click to dismiss)
-  when a session **finishes** (✅ "your turn") or **needs permission** (🟡).
-  Permission alerts include the actual pending command — e.g.
-  `🟡 api-service — approve?` / `Bash: rm -rf build/` — correlated from the
-  `PreToolUse` that triggered the prompt, since Claude's own message is generic
-  ("Claude needs your permission").
+- A **floating banner** (top-right, auto-dismiss after 8s) when a session
+  **finishes** (✅ "your turn") or **needs permission** (🟡). Permission alerts
+  include the actual pending command — e.g. `🟡 api-service — approve?` /
+  `Bash: rm -rf build/` — correlated from the `PreToolUse` that triggered the
+  prompt, since Claude's own message is generic ("Claude needs your permission").
+- **Click an alert to jump to its terminal.** The hook records the session's
+  `TERM_PROGRAM`, so clicking a banner (or "Focus …" in a session's submenu)
+  raises that terminal app — handy when juggling several Claude instances.
+  (Best-effort: it raises the app, not the specific tab.)
+- **Per-project mute.** Each session's submenu has "Mute this project" to silence
+  just the noisy repo while keeping alerts for the one you care about; a global
+  mute is still there too. Muted projects show a 🔇 in the dropdown.
 - 100% local. No network, no analytics, no phone-home. Everything lives in
   `~/.claude-watch/`.
 
@@ -51,13 +57,31 @@ Claude Code hook ──stdin JSON──▶ hook.py ──append──▶ ~/.clau
 
 ## Install
 
+### Homebrew (recommended)
+
+```sh
+brew tap afplana/claude-watch https://github.com/afplana/claude-watch
+brew install claude-watch
+claude-watch install     # one-time: register hooks + start the menu bar app
+```
+
+`brew install` only drops the scripts on disk; `claude-watch install` does the
+actual wiring (hooks + LaunchAgent), which is why it's a separate step. The
+formula installs no compiled binary — the `claude-watch` command is a shell shim
+that runs the scripts under `/usr/bin/python3`, so it stays Santa-safe.
+
+### Manual (clone)
+
 ```sh
 /usr/bin/python3 install.py
 ```
 
-This backs up `~/.claude/settings.json`, registers the capture hook, installs the
-`com.claudewatch.bar` LaunchAgent, and starts the menu bar app. Restart any running
-Claude Code sessions so they pick up the new hooks.
+Either way this backs up `~/.claude/settings.json`, registers the capture hook,
+installs the `com.claudewatch.bar` LaunchAgent, and starts the menu bar app.
+Restart any running Claude Code sessions so they pick up the new hooks.
+
+The `claude-watch` command also wraps the rest: `start` / `stop` / `restart` /
+`status` the menu bar app, `run [--demo]`, `stats`, `search`, and `uninstall`.
 
 ## Uninstall
 

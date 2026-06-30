@@ -31,6 +31,7 @@ warnings.filterwarnings("ignore", message="PyObjCPointer created")
 
 from AppKit import (
     NSApplication,
+    NSApplicationActivateAllWindows,
     NSApplicationActivationPolicyAccessory,
     NSBackingStoreBuffered,
     NSButton,
@@ -51,6 +52,7 @@ from AppKit import (
     NSWindowCollectionBehaviorStationary,
     NSWindowStyleMaskBorderless,
     NSWindowStyleMaskNonactivatingPanel,
+    NSWorkspace,
 )
 from Foundation import NSObject, NSTimer
 
@@ -94,6 +96,64 @@ def display_emoji(sess, now, idle=IDLE_SECONDS):
     if is_active(sess, now, idle):
         return STATUS_EMOJI[sess["status"]]
     return STATUS_EMOJI[ENDED]  # stale / idle / ended
+
+
+# --------------------------------------------------------------- mute helpers
+def is_muted(config, project):
+    """Notifications are silenced if globally muted or this project is muted."""
+    if config.get("muted"):
+        return True
+    return project in set(config.get("muted_projects", []))
+
+
+def toggle_project_mute(config, project):
+    """Add/remove a project from the per-project mute list (in place)."""
+    muted = list(config.get("muted_projects", []))
+    if project in muted:
+        muted.remove(project)
+    else:
+        muted.append(project)
+    config["muted_projects"] = muted
+    return config
+
+
+# ------------------------------------------------------------ terminal focus
+# TERM_PROGRAM (set by the terminal Claude Code runs inside, captured by hook.py)
+# → the localizedName(s) of the matching macOS app, so a click can raise it.
+TERM_APP_MAP = {
+    "Apple_Terminal": ["Terminal"],
+    "iTerm.app": ["iTerm2", "iTerm"],
+    "vscode": ["Code", "Visual Studio Code", "Code - Insiders"],
+    "ghostty": ["Ghostty"],
+    "WezTerm": ["WezTerm"],
+    "Hyper": ["Hyper"],
+    "Tabby": ["Tabby"],
+    "WarpTerminal": ["Warp"],
+    "warp": ["Warp"],
+    "kitty": ["kitty"],
+    "alacritty": ["Alacritty"],
+}
+
+
+def terminal_app_names(term_program):
+    """Candidate app names to match against running apps for a TERM_PROGRAM."""
+    if not term_program:
+        return []
+    return TERM_APP_MAP.get(term_program, [term_program])
+
+
+def focus_terminal(term_program):
+    """Bring the terminal app Claude is running in to the front. Best-effort:
+    we can raise the app, not the specific tab. Returns True if we activated one."""
+    wanted = {n.lower() for n in terminal_app_names(term_program)}
+    if not wanted:
+        return False
+    for running in NSWorkspace.sharedWorkspace().runningApplications():
+        name = running.localizedName()
+        if name and name.lower() in wanted:
+            running.activateWithOptions_(NSApplicationActivateAllWindows)
+            return True
+    return False
 
 
 def event_status(event):
@@ -154,6 +214,12 @@ class BannerController(NSObject):
         if self in self.app.banners:
             self.app.banners.remove(self)
 
+    def focusAndDismiss_(self, sender):
+        """Click handler: jump to the session's terminal, then close the banner."""
+        if getattr(self, "term", None):
+            focus_terminal(self.term)
+        self.dismiss_(sender)
+
 
 def _banner_label(frame, text, size, bold, white):
     tf = NSTextField.alloc().initWithFrame_(frame)
@@ -167,9 +233,12 @@ def _banner_label(frame, text, size, bold, white):
     return tf
 
 
-def show_banner(app, title, body, sound=None):
+def show_banner(app, title, body, sound=None, term=None):
     """Draw our own notification banner (top-right), since macOS system
-    notifications don't render on this machine. Must run on the main thread."""
+    notifications don't render on this machine. Must run on the main thread.
+
+    If `term` (the session's TERM_PROGRAM) is known, clicking the banner raises
+    that terminal app instead of just dismissing."""
     if not hasattr(app, "banners"):
         app.banners = []
 
@@ -207,14 +276,16 @@ def show_banner(app, title, body, sound=None):
     controller.app = app
     controller.panel = panel
     controller.timer = None
+    controller.term = term
 
-    # transparent full-size button → click anywhere to dismiss
+    # transparent full-size button → click anywhere to focus the session (if we
+    # know its terminal) and dismiss; otherwise just dismiss.
     btn = NSButton.alloc().initWithFrame_(((0, 0), (BANNER_W, BANNER_H)))
     btn.setBordered_(False)
     btn.setTransparent_(True)
     btn.setTitle_("")
     btn.setTarget_(controller)
-    btn.setAction_("dismiss:")
+    btn.setAction_("focusAndDismiss:" if term else "dismiss:")
     content.addSubview_(btn)
 
     panel.orderFrontRegardless()
@@ -261,10 +332,16 @@ def apply_event(app, ev, notify_new):
             "events": deque(maxlen=MAX_EVENTS_PER_SESSION),
             "last_ts": ev.get("ts", ""),
             "pending": None,
+            "term": ev.get("term", ""),
+            "cwd": ev.get("cwd", ""),
         }
         app.sessions[sid] = sess
     if ev.get("project"):
         sess["project"] = ev["project"]
+    if ev.get("term"):
+        sess["term"] = ev["term"]
+    if ev.get("cwd"):
+        sess["cwd"] = ev["cwd"]
 
     # Track the tool call awaiting a result — i.e. what a permission prompt is for.
     if event == "PreToolUse":
@@ -277,12 +354,14 @@ def apply_event(app, ev, notify_new):
     if event not in ("SessionStart", "SessionEnd"):
         sess["events"].append(ev)
 
-    if notify_new and not app.config.get("muted"):
+    if notify_new and not is_muted(app.config, sess["project"]):
         project = sess["project"]
+        term = sess.get("term")
         if event == "Stop":
-            show_banner(app, "✅ %s" % project, "Claude finished — your turn.", "Glass")
+            show_banner(app, "✅ %s" % project, "Claude finished — your turn.", "Glass", term=term)
         elif event == "Notification":
-            show_banner(app, *notification_alert(project, ev.get("detail", ""), sess.get("pending")))
+            title, text, sound = notification_alert(project, ev.get("detail", ""), sess.get("pending"))
+            show_banner(app, title, text, sound, term=term)
 
 
 def consume(app, notify_new):
@@ -328,6 +407,31 @@ def add_item(menu, target, title, action=None, key=""):
     return item
 
 
+def project_submenu(app, sess):
+    """Per-project actions: jump to its terminal, mute just this project."""
+    project = sess["project"]
+    term = sess.get("term", "")
+    sub = NSMenu.alloc().init()
+
+    if term:
+        names = terminal_app_names(term)
+        label = "Focus %s" % (names[0] if names else term)
+        item = add_item(sub, app, label, action="focusProject:")
+        item.setRepresentedObject_(term)
+    else:
+        add_item(sub, app, "Focus terminal (unknown)")
+
+    muted = project in set(app.config.get("muted_projects", []))
+    mtitle = "Unmute this project" if muted else "Mute this project"
+    item = add_item(sub, app, mtitle, action="muteProject:")
+    item.setRepresentedObject_(project)
+
+    if sess.get("cwd"):
+        sub.addItem_(NSMenuItem.separatorItem())
+        add_item(sub, app, sess["cwd"])
+    return sub
+
+
 def build_menu(app):
     now = datetime.now()
     sessions = ordered_sessions(app)
@@ -342,7 +446,11 @@ def build_menu(app):
         add_item(menu, app, "  no sessions yet today")
     for sess in sessions[:MAX_SESSIONS_SHOWN]:
         emoji = display_emoji(sess, now)
-        add_item(menu, app, "%s  %s" % (emoji, sess["project"]))
+        mark = " 🔇" if is_muted(app.config, sess["project"]) else ""
+        header = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "%s  %s%s" % (emoji, sess["project"], mark), "", "")
+        header.setSubmenu_(project_submenu(app, sess))
+        menu.addItem_(header)
         for ev in list(sess["events"]):
             add_item(menu, app, "      %s" % describe(ev))
         menu.addItem_(NSMenuItem.separatorItem())
@@ -365,6 +473,7 @@ def demo_feed(path):
         ("PreToolUse", "web-app", "Bash", "mvn -q test"),
         ("Stop", "web-app", "", ""),
     ]
+    term = os.environ.get("TERM_PROGRAM", "")
     for event, project, tool, detail in script:
         rec = {
             "ts": datetime.now().isoformat(timespec="seconds"),
@@ -373,6 +482,7 @@ def demo_feed(path):
             "event": event,
             "tool": tool,
             "detail": detail,
+            "term": term,
         }
         with open(path, "a") as fh:
             fh.write(json.dumps(rec) + "\n")
@@ -407,7 +517,8 @@ class AppDelegate(NSObject):
 
         if "--banner-test" in sys.argv:
             show_banner(self, "🟡 api-service — approve?",
-                        "Bash: rm -rf build/ && mvn clean install", "Ping")
+                        "Bash: rm -rf build/ && mvn clean install", "Ping",
+                        term=os.environ.get("TERM_PROGRAM", ""))
 
     def tick_(self, _timer):
         if not self.demo:
@@ -423,6 +534,14 @@ class AppDelegate(NSObject):
         self.config["muted"] = not self.config.get("muted", False)
         save_config(self.config)
         build_menu(self)
+
+    def muteProject_(self, sender):
+        toggle_project_mute(self.config, sender.representedObject())
+        save_config(self.config)
+        build_menu(self)
+
+    def focusProject_(self, sender):
+        focus_terminal(sender.representedObject())
 
     def quit_(self, _sender):
         NSApplication.sharedApplication().terminate_(self)
