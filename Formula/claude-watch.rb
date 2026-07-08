@@ -6,8 +6,9 @@ class ClaudeWatch < Formula
   license "MIT"
 
   # No build step and no bundled binaries: the tool runs entirely under the
-  # Apple-signed system /usr/bin/python3 (which already ships PyObjC), so there
-  # is nothing for a corporate Santa Team-ID rule to block.
+  # Apple-signed system /usr/bin/python3, so there is nothing for a corporate
+  # Santa Team-ID rule to block. `claude-watch install` adds PyObjC as a
+  # site-package of that same interpreter if it isn't already there.
   depends_on :macos
 
   def install
