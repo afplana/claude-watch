@@ -19,6 +19,7 @@ logic lives in module-level functions; the delegate only carries true selectors.
 
 import json
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -154,6 +155,71 @@ def focus_terminal(term_program):
             running.activateWithOptions_(NSApplicationActivateAllWindows)
             return True
     return False
+
+
+def iterm_session_uuid(term_session):
+    """ITERM_SESSION_ID looks like 'w0t1p0:UUID'; return the UUID part."""
+    if not term_session:
+        return ""
+    return term_session.split(":")[-1]
+
+
+def iterm_focus_script(uuid):
+    return (
+        'tell application "iTerm2"\n'
+        '  repeat with w in windows\n'
+        '    repeat with t in tabs of w\n'
+        '      repeat with s in sessions of t\n'
+        '        if id of s is "%s" then\n'
+        '          select w\n          select t\n          select s\n'
+        '          activate\n          return "FOUND"\n'
+        '        end if\n'
+        '      end repeat\n    end repeat\n  end repeat\n'
+        'end tell\nreturn ""\n' % uuid
+    )
+
+
+def terminal_focus_script(tty):
+    return (
+        'tell application "Terminal"\n'
+        '  repeat with w in windows\n'
+        '    repeat with t in tabs of w\n'
+        '      if tty of t is "%s" then\n'
+        '        set selected of t to true\n'
+        '        set frontmost of w to true\n'
+        '        activate\n        return "FOUND"\n'
+        '      end if\n'
+        '    end repeat\n  end repeat\n'
+        'end tell\nreturn ""\n' % tty
+    )
+
+
+def focus_plan(term, term_session, tty):
+    """Pure: decide how to focus a session's tab. Returns (kind, script|None)."""
+    names = {n.lower() for n in terminal_app_names(term)}
+    if ({"iterm2", "iterm"} & names) and iterm_session_uuid(term_session):
+        return ("iterm", iterm_focus_script(iterm_session_uuid(term_session)))
+    if ("terminal" in names) and tty:
+        return ("terminal", terminal_focus_script(tty))
+    return ("app", None)
+
+
+def _osascript(script):
+    """Run AppleScript via the Apple-signed /usr/bin/osascript. Returns stdout."""
+    try:
+        r = subprocess.run(["/usr/bin/osascript", "-e", script],
+                           capture_output=True, text=True, timeout=3)
+        return r.stdout.strip()
+    except Exception:
+        return ""
+
+
+def focus_tab(term, term_session, tty):
+    """Raise the exact tab; fall back to the app-level raise if unresolved."""
+    kind, script = focus_plan(term, term_session, tty)
+    if kind in ("iterm", "terminal") and _osascript(script) == "FOUND":
+        return True
+    return focus_terminal(term)
 
 
 def event_status(event):

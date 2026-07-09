@@ -125,5 +125,30 @@ class TerminalTargetTests(unittest.TestCase):
         self.assertEqual(bar.terminal_app_names(""), [])
 
 
+class FocusPlanTests(unittest.TestCase):
+    def test_iterm_uuid_extracted_from_session_id(self):
+        self.assertEqual(bar.iterm_session_uuid("w0t1p0:ABC-123"), "ABC-123")
+        self.assertEqual(bar.iterm_session_uuid("ABC-123"), "ABC-123")
+        self.assertEqual(bar.iterm_session_uuid(""), "")
+
+    def test_plan_prefers_iterm_when_session_id_present(self):
+        kind, script = bar.focus_plan("iTerm.app", "w0t1p0:ABC-123", "")
+        self.assertEqual(kind, "iterm")
+        self.assertIn("ABC-123", script)
+
+    def test_plan_uses_terminal_tty_match(self):
+        kind, script = bar.focus_plan("Apple_Terminal", "", "/dev/ttys004")
+        self.assertEqual(kind, "terminal")
+        self.assertIn("/dev/ttys004", script)
+
+    def test_plan_falls_back_to_app_without_identifiers(self):
+        self.assertEqual(bar.focus_plan("Apple_Terminal", "", ""), ("app", None))
+        self.assertEqual(bar.focus_plan("iTerm.app", "", ""), ("app", None))
+
+    def test_plan_falls_back_to_app_for_unknown_terminal(self):
+        self.assertEqual(bar.focus_plan("SomeFutureTerm", "x:y", "/dev/ttys1"),
+                         ("app", None))
+
+
 if __name__ == "__main__":
     unittest.main()
