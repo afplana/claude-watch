@@ -62,6 +62,19 @@ class NormalizeTests(unittest.TestCase):
         rec = hook.normalize({})
         self.assertEqual(rec["event"], "Unknown")
 
+    def test_captures_term_session_and_tty(self):
+        rec = hook.normalize(
+            {"hook_event_name": "SessionStart", "cwd": "/x/proj"},
+            term="iTerm.app", term_session="w0t1p0:ABC-123", tty="/dev/ttys004",
+        )
+        self.assertEqual(rec["term_session"], "w0t1p0:ABC-123")
+        self.assertEqual(rec["tty"], "/dev/ttys004")
+
+    def test_term_session_and_tty_default_empty(self):
+        rec = hook.normalize({"hook_event_name": "Stop", "cwd": "/x/proj"})
+        self.assertEqual(rec["term_session"], "")
+        self.assertEqual(rec["tty"], "")
+
 
 if __name__ == "__main__":
     unittest.main()
