@@ -283,7 +283,7 @@ class BannerController(NSObject):
     def focusAndDismiss_(self, sender):
         """Click handler: jump to the session's terminal, then close the banner."""
         if getattr(self, "term", None):
-            focus_terminal(self.term)
+            focus_tab(self.term, getattr(self, "term_session", ""), getattr(self, "tty", ""))
         self.dismiss_(sender)
 
 
@@ -299,7 +299,7 @@ def _banner_label(frame, text, size, bold, white):
     return tf
 
 
-def show_banner(app, title, body, sound=None, term=None):
+def show_banner(app, title, body, sound=None, term=None, term_session="", tty=""):
     """Draw our own notification banner (top-right), since macOS system
     notifications don't render on this machine. Must run on the main thread.
 
@@ -343,6 +343,8 @@ def show_banner(app, title, body, sound=None, term=None):
     controller.panel = panel
     controller.timer = None
     controller.term = term
+    controller.term_session = term_session
+    controller.tty = tty
 
     # transparent full-size button → click anywhere to focus the session (if we
     # know its terminal) and dismiss; otherwise just dismiss.
@@ -399,6 +401,8 @@ def apply_event(app, ev, notify_new):
             "last_ts": ev.get("ts", ""),
             "pending": None,
             "term": ev.get("term", ""),
+            "term_session": ev.get("term_session", ""),
+            "tty": ev.get("tty", ""),
             "cwd": ev.get("cwd", ""),
         }
         app.sessions[sid] = sess
@@ -406,6 +410,10 @@ def apply_event(app, ev, notify_new):
         sess["project"] = ev["project"]
     if ev.get("term"):
         sess["term"] = ev["term"]
+    if ev.get("term_session"):
+        sess["term_session"] = ev["term_session"]
+    if ev.get("tty"):
+        sess["tty"] = ev["tty"]
     if ev.get("cwd"):
         sess["cwd"] = ev["cwd"]
 
@@ -423,11 +431,14 @@ def apply_event(app, ev, notify_new):
     if notify_new and not is_muted(app.config, sess["project"]):
         project = sess["project"]
         term = sess.get("term")
+        ts = sess.get("term_session", "")
+        tty = sess.get("tty", "")
         if event == "Stop":
-            show_banner(app, "✅ %s" % project, "Claude finished — your turn.", "Glass", term=term)
+            show_banner(app, "✅ %s" % project, "Claude finished — your turn.",
+                        "Glass", term=term, term_session=ts, tty=tty)
         elif event == "Notification":
             title, text, sound = notification_alert(project, ev.get("detail", ""), sess.get("pending"))
-            show_banner(app, title, text, sound, term=term)
+            show_banner(app, title, text, sound, term=term, term_session=ts, tty=tty)
 
 
 def consume(app, notify_new):
@@ -483,7 +494,11 @@ def project_submenu(app, sess):
         names = terminal_app_names(term)
         label = "Focus %s" % (names[0] if names else term)
         item = add_item(sub, app, label, action="focusProject:")
-        item.setRepresentedObject_(term)
+        item.setRepresentedObject_({
+            "term": term,
+            "term_session": sess.get("term_session", ""),
+            "tty": sess.get("tty", ""),
+        })
     else:
         add_item(sub, app, "Focus terminal (unknown)")
 
@@ -607,7 +622,8 @@ class AppDelegate(NSObject):
         build_menu(self)
 
     def focusProject_(self, sender):
-        focus_terminal(sender.representedObject())
+        obj = sender.representedObject()
+        focus_tab(obj.get("term", ""), obj.get("term_session", ""), obj.get("tty", ""))
 
     def quit_(self, _sender):
         NSApplication.sharedApplication().terminate_(self)
