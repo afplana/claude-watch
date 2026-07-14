@@ -446,8 +446,9 @@ def apply_event(app, ev, notify_new):
         term = sess.get("term")
         ts = sess.get("term_session", "")
         tty = sess.get("tty", "")
+        label = session_label(sess)
         if event == "Stop":
-            show_banner(app, "✅ %s" % project, "Claude finished — your turn.",
+            show_banner(app, "✅ %s" % label, "Claude finished — your turn.",
                         "Glass", term=term, term_session=ts, tty=tty)
         elif event == "Notification":
             title, text, sound = notification_alert(project, ev.get("detail", ""), sess.get("pending"))
@@ -542,7 +543,7 @@ def build_menu(app):
         emoji = display_emoji(sess, now)
         mark = " 🔇" if is_muted(app.config, sess["project"]) else ""
         header = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-            "%s  %s%s" % (emoji, sess["project"], mark), "", "")
+            "%s  %s%s" % (emoji, session_label(sess), mark), "", "")
         header.setSubmenu_(project_submenu(app, sess))
         menu.addItem_(header)
         for ev in list(sess["events"]):
