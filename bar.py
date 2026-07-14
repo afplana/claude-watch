@@ -99,6 +99,16 @@ def display_emoji(sess, now, idle=IDLE_SECONDS):
     return STATUS_EMOJI[ENDED]  # stale / idle / ended
 
 
+def session_label(sess, width=48):
+    """Human label for a session: 'project — first prompt', project-only if none."""
+    project = sess.get("project", "(unknown)")
+    title = (sess.get("title") or "").strip()
+    if not title:
+        return project
+    label = "%s — %s" % (project, title)
+    return label if len(label) <= width else label[: width - 1] + "…"
+
+
 # --------------------------------------------------------------- mute helpers
 def is_muted(config, project):
     """Notifications are silenced if globally muted or this project is muted."""
@@ -404,6 +414,7 @@ def apply_event(app, ev, notify_new):
             "term_session": ev.get("term_session", ""),
             "tty": ev.get("tty", ""),
             "cwd": ev.get("cwd", ""),
+            "title": "",
         }
         app.sessions[sid] = sess
     if ev.get("project"):
@@ -425,6 +436,8 @@ def apply_event(app, ev, notify_new):
 
     sess["status"] = event_status(event)
     sess["last_ts"] = ev.get("ts", sess["last_ts"])
+    if event == "UserPromptSubmit" and not sess.get("title"):
+        sess["title"] = ev.get("detail", "")
     if event not in ("SessionStart", "SessionEnd"):
         sess["events"].append(ev)
 
