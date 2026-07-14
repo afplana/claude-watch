@@ -166,5 +166,23 @@ class SessionLabelTests(unittest.TestCase):
         self.assertTrue(out.endswith("…"))
 
 
+class BannerActionTests(unittest.TestCase):
+    def test_pending_command_text_prefers_detail(self):
+        s = {"pending": {"tool": "Bash", "detail": "rm -rf build/"}}
+        self.assertEqual(bar.pending_command_text(s), "rm -rf build/")
+
+    def test_pending_command_text_uses_tool_when_no_detail(self):
+        s = {"pending": {"tool": "Edit", "detail": ""}}
+        self.assertEqual(bar.pending_command_text(s), "Edit")
+
+    def test_pending_command_text_empty_when_no_pending(self):
+        self.assertEqual(bar.pending_command_text({}), "")
+        self.assertEqual(bar.pending_command_text({"pending": None}), "")
+
+    def test_snooze_seconds(self):
+        self.assertEqual(bar.snooze_seconds(5), 300.0)
+        self.assertEqual(bar.snooze_seconds(), 300.0)
+
+
 if __name__ == "__main__":
     unittest.main()
