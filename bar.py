@@ -99,6 +99,16 @@ def display_emoji(sess, now, idle=IDLE_SECONDS):
     return STATUS_EMOJI[ENDED]  # stale / idle / ended
 
 
+def pending_command_text(sess):
+    """The copyable command a permission prompt is about; '' if none."""
+    pending = sess.get("pending") or {}
+    return pending.get("detail") or pending.get("tool") or ""
+
+
+def snooze_seconds(minutes=5.0):
+    return minutes * 60
+
+
 def session_label(sess, width=48):
     """Human label for a session: 'project — first prompt', project-only if none."""
     project = sess.get("project", "(unknown)")
