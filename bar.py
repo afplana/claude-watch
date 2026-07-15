@@ -99,6 +99,16 @@ def display_emoji(sess, now, idle=IDLE_SECONDS):
     return STATUS_EMOJI[ENDED]  # stale / idle / ended
 
 
+def session_label(sess, width=48):
+    """Human label for a session: 'project — first prompt', project-only if none."""
+    project = sess.get("project", "(unknown)")
+    title = (sess.get("title") or "").strip()
+    if not title:
+        return project
+    label = "%s — %s" % (project, title)
+    return label if len(label) <= width else label[: width - 1] + "…"
+
+
 # --------------------------------------------------------------- mute helpers
 def is_muted(config, project):
     """Notifications are silenced if globally muted or this project is muted."""
@@ -404,6 +414,7 @@ def apply_event(app, ev, notify_new):
             "term_session": ev.get("term_session", ""),
             "tty": ev.get("tty", ""),
             "cwd": ev.get("cwd", ""),
+            "title": "",
         }
         app.sessions[sid] = sess
     if ev.get("project"):
@@ -425,6 +436,8 @@ def apply_event(app, ev, notify_new):
 
     sess["status"] = event_status(event)
     sess["last_ts"] = ev.get("ts", sess["last_ts"])
+    if event == "UserPromptSubmit" and not sess.get("title"):
+        sess["title"] = ev.get("detail", "")
     if event not in ("SessionStart", "SessionEnd"):
         sess["events"].append(ev)
 
@@ -433,8 +446,9 @@ def apply_event(app, ev, notify_new):
         term = sess.get("term")
         ts = sess.get("term_session", "")
         tty = sess.get("tty", "")
+        label = session_label(sess)
         if event == "Stop":
-            show_banner(app, "✅ %s" % project, "Claude finished — your turn.",
+            show_banner(app, "✅ %s" % label, "Claude finished — your turn.",
                         "Glass", term=term, term_session=ts, tty=tty)
         elif event == "Notification":
             title, text, sound = notification_alert(project, ev.get("detail", ""), sess.get("pending"))
@@ -529,7 +543,7 @@ def build_menu(app):
         emoji = display_emoji(sess, now)
         mark = " 🔇" if is_muted(app.config, sess["project"]) else ""
         header = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-            "%s  %s%s" % (emoji, sess["project"], mark), "", "")
+            "%s  %s%s" % (emoji, session_label(sess), mark), "", "")
         header.setSubmenu_(project_submenu(app, sess))
         menu.addItem_(header)
         for ev in list(sess["events"]):

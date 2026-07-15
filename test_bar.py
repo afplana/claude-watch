@@ -150,5 +150,21 @@ class FocusPlanTests(unittest.TestCase):
                          ("app", None))
 
 
+class SessionLabelTests(unittest.TestCase):
+    def test_label_combines_project_and_title(self):
+        s = {"project": "web-app", "title": "fix the rounding bug"}
+        self.assertEqual(bar.session_label(s), "web-app — fix the rounding bug")
+
+    def test_label_falls_back_to_project_without_title(self):
+        self.assertEqual(bar.session_label({"project": "web-app"}), "web-app")
+        self.assertEqual(bar.session_label({"project": "web-app", "title": ""}), "web-app")
+
+    def test_label_truncates_long_title(self):
+        s = {"project": "p", "title": "x" * 100}
+        out = bar.session_label(s, width=20)
+        self.assertLessEqual(len(out), 20)
+        self.assertTrue(out.endswith("…"))
+
+
 if __name__ == "__main__":
     unittest.main()
