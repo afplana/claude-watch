@@ -42,6 +42,7 @@ from AppKit import (
     NSMenu,
     NSMenuItem,
     NSPanel,
+    NSPasteboard,
     NSScreen,
     NSSound,
     NSStatusBar,
@@ -280,7 +281,7 @@ def notification_alert(project, message, pending):
     return ("🟡 %s" % project, message or "Needs your attention.", "Submarine")
 
 
-BANNER_W, BANNER_H, BANNER_MARGIN, BANNER_GAP = 360, 108, 16, 8
+BANNER_W, BANNER_H, BANNER_MARGIN, BANNER_GAP = 360, 140, 16, 8
 BANNER_SECONDS = 8.0
 
 
@@ -288,7 +289,8 @@ class BannerController(NSObject):
     """Owns one floating banner window + its auto-dismiss timer.
 
     Kept in app.banners so it isn't garbage-collected while on screen.
-    `dismiss_` is the only Objective-C selector (1 arg → valid arity).
+    Action methods (`dismiss_`, `focusAndDismiss_`, `copyCommand_`, `snooze_`)
+    are Objective-C selectors and must each take exactly one arg (the sender).
     """
 
     def dismiss_(self, _sender):
@@ -306,6 +308,50 @@ class BannerController(NSObject):
             focus_tab(self.term, getattr(self, "term_session", ""), getattr(self, "tty", ""))
         self.dismiss_(sender)
 
+    def copyCommand_(self, _sender):
+        """Copy the pending command's text to the clipboard, then dismiss."""
+        text = getattr(self, "command_text", "")
+        if text:
+            pb = NSPasteboard.generalPasteboard()
+            pb.clearContents()
+            pb.writeObjects_([text])
+        self.dismiss_(_sender)
+
+    def snooze_(self, sender):
+        """Hide the banner now, then re-show the same content after a delay."""
+        payload = dict(getattr(self, "payload", {}))
+        app = self.app
+        self.dismiss_(sender)
+        NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            snooze_seconds(5), _make_snooze_reshow(app, payload), "fire:", None, False)
+
+
+class _SnoozeReshow(NSObject):
+    """One-shot timer target that re-shows a snoozed banner's exact content.
+
+    Held on the timer's target ref (strong ref from NSTimer) so it survives
+    until it fires; nothing else needs to keep it alive.
+
+    `fire_` is the only Objective-C selector (1 arg → valid arity); construction
+    takes multiple args, so — per this module's PyObjC convention — it lives in
+    the module-level `_make_snooze_reshow` helper below, not a classmethod on
+    the NSObject subclass (PyObjC infers 0-arg selectors for methods without a
+    trailing underscore, so a 2-arg `make` classmethod raises BadPrototypeError).
+    """
+
+    def fire_(self, _timer):
+        p = self.payload
+        show_banner(self.app, p["title"], p["body"], p.get("sound"),
+                    term=p.get("term"), term_session=p.get("term_session", ""),
+                    tty=p.get("tty", ""), command_text=p.get("command_text", ""))
+
+
+def _make_snooze_reshow(app, payload):
+    obj = _SnoozeReshow.alloc().init()
+    obj.app = app
+    obj.payload = payload
+    return obj
+
 
 def _banner_label(frame, text, size, bold, white):
     tf = NSTextField.alloc().initWithFrame_(frame)
@@ -319,12 +365,24 @@ def _banner_label(frame, text, size, bold, white):
     return tf
 
 
-def show_banner(app, title, body, sound=None, term=None, term_session="", tty=""):
+def _banner_button(frame, title, target, action):
+    b = NSButton.alloc().initWithFrame_(frame)
+    b.setTitle_(title)
+    b.setBezelStyle_(1)  # rounded
+    b.setFont_(NSFont.systemFontOfSize_(11))
+    b.setTarget_(target)
+    b.setAction_(action)
+    return b
+
+
+def show_banner(app, title, body, sound=None, term=None, term_session="", tty="", command_text=""):
     """Draw our own notification banner (top-right), since macOS system
     notifications don't render on this machine. Must run on the main thread.
 
-    If `term` (the session's TERM_PROGRAM) is known, clicking the banner raises
-    that terminal app instead of just dismissing."""
+    Renders a row of real buttons along the bottom: Focus tab (raises the
+    session's terminal tab), Copy command (only when `command_text` is
+    non-empty), Snooze (re-show this same banner after a delay), Dismiss.
+    App-side only — these control the app/terminal/clipboard, never Claude."""
     if not hasattr(app, "banners"):
         app.banners = []
 
@@ -352,8 +410,10 @@ def show_banner(app, title, body, sound=None, term=None, term_session="", tty=""
         NSColor.colorWithCalibratedWhite_alpha_(0.13, 0.96).CGColor())
     panel.setContentView_(content)
 
+    # Top area (title/body) stays non-interactive; only the button row below
+    # it responds to clicks.
     content.addSubview_(_banner_label(((18, BANNER_H - 42), (BANNER_W - 36, 28)), title, 17, True, 1.0))
-    body_tf = _banner_label(((18, 14), (BANNER_W - 36, BANNER_H - 52)), body, 13.5, False, 0.92)
+    body_tf = _banner_label(((18, 46), (BANNER_W - 36, BANNER_H - 92)), body, 13.5, False, 0.92)
     body_tf.cell().setWraps_(True)
     body_tf.cell().setLineBreakMode_(NSLineBreakByWordWrapping)
     content.addSubview_(body_tf)
@@ -365,16 +425,35 @@ def show_banner(app, title, body, sound=None, term=None, term_session="", tty=""
     controller.term = term
     controller.term_session = term_session
     controller.tty = tty
+    controller.command_text = command_text
+    controller.payload = {
+        "title": title,
+        "body": body,
+        "sound": sound,
+        "term": term,
+        "term_session": term_session,
+        "tty": tty,
+        "command_text": command_text,
+    }
 
-    # transparent full-size button → click anywhere to focus the session (if we
-    # know its terminal) and dismiss; otherwise just dismiss.
-    btn = NSButton.alloc().initWithFrame_(((0, 0), (BANNER_W, BANNER_H)))
-    btn.setBordered_(False)
-    btn.setTransparent_(True)
-    btn.setTitle_("")
-    btn.setTarget_(controller)
-    btn.setAction_("focusAndDismiss:" if term else "dismiss:")
-    content.addSubview_(btn)
+    # Button row along the bottom: Focus tab, Copy command (only when there's
+    # a pending command to copy), Snooze, Dismiss.
+    row = [("Focus tab", "focusAndDismiss:")]
+    if command_text:
+        row.append(("Copy command", "copyCommand:"))
+    row.append(("Snooze", "snooze:"))
+    row.append(("Dismiss", "dismiss:"))
+
+    row_y = 10
+    row_h = 24
+    row_gap = 6
+    row_x0 = 18
+    row_w = BANNER_W - 2 * row_x0
+    btn_w = (row_w - row_gap * (len(row) - 1)) / float(len(row))
+    for i, (label, action) in enumerate(row):
+        bx = row_x0 + i * (btn_w + row_gap)
+        button = _banner_button(((bx, row_y), (btn_w, row_h)), label, controller, action)
+        content.addSubview_(button)
 
     panel.orderFrontRegardless()
     controller.timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
@@ -462,7 +541,8 @@ def apply_event(app, ev, notify_new):
                         "Glass", term=term, term_session=ts, tty=tty)
         elif event == "Notification":
             title, text, sound = notification_alert(project, ev.get("detail", ""), sess.get("pending"))
-            show_banner(app, title, text, sound, term=term, term_session=ts, tty=tty)
+            cmd = pending_command_text(sess)
+            show_banner(app, title, text, sound, term=term, term_session=ts, tty=tty, command_text=cmd)
 
 
 def consume(app, notify_new):
@@ -623,7 +703,8 @@ class AppDelegate(NSObject):
         if "--banner-test" in sys.argv:
             show_banner(self, "🟡 api-service — approve?",
                         "Bash: rm -rf build/ && mvn clean install", "Ping",
-                        term=os.environ.get("TERM_PROGRAM", ""))
+                        term=os.environ.get("TERM_PROGRAM", ""),
+                        command_text="rm -rf build/ && mvn clean install")
 
     def tick_(self, _timer):
         if not self.demo:
