@@ -33,9 +33,12 @@ alerts** for your Claude Code sessions.
 
 Masko shipped a compiled `hook-sender` binary, which a corporate Santa "Team ID
 rule" blocked. claude-watch ships **no binaries**. Both scripts run under the
-Apple-signed system interpreter `/usr/bin/python3` (which already bundles PyObjC),
-so Santa evaluates the approved interpreter, not a new binary. Alerts are drawn
-as native AppKit windows — no external helpers.
+Apple-signed system interpreter `/usr/bin/python3`, so Santa evaluates the
+approved interpreter, not a new binary. Alerts are drawn as native AppKit
+windows — no external helpers. On machines where `/usr/bin/python3` doesn't
+already bundle PyObjC (see the install note below), `install.py` adds it as a
+site-package of that same interpreter rather than switching interpreters, so
+this property still holds.
 
 ## How it works
 
@@ -80,6 +83,15 @@ Either way this backs up `~/.claude/settings.json`, registers the capture hook,
 installs the `com.claudewatch.bar` LaunchAgent, and starts the menu bar app.
 Restart any running Claude Code sessions so they pick up the new hooks.
 
+`bar.py` needs PyObjC (`AppKit`/`Foundation`) to draw the menu bar icon and
+banners. Older macOS shipped this with the system Python, but on newer
+machines `/usr/bin/python3` resolves to the Command Line Tools' interpreter,
+which doesn't bundle it. `install.py` detects this and runs
+`/usr/bin/python3 -m pip install --user pyobjc-framework-Cocoa` automatically
+— still the same Apple-signed interpreter, just with one more site-package,
+so it stays Santa-safe. If that install fails (e.g. no network), hooks still
+work; only the menu bar app stays down until you install PyObjC manually.
+
 The `claude-watch` command also wraps the rest: `start` / `stop` / `restart` /
 `status` the menu bar app, `run [--demo]`, `stats`, `search`, and `uninstall`.
 
@@ -118,6 +130,8 @@ Note: hooks capture *events*, not tokens/cost, so analytics cover activity
 ```sh
 /usr/bin/python3 test_hook.py
 /usr/bin/python3 test_cw.py
+/usr/bin/python3 test_bar.py
+/usr/bin/python3 test_install.py
 ```
 
 ## Data & files

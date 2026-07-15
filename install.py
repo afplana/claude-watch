@@ -8,6 +8,7 @@
 Run:  /usr/bin/python3 install.py
 """
 
+import importlib.util
 import json
 import os
 import shutil
@@ -88,6 +89,43 @@ def _is_ours(entry):
     return False
 
 
+def _pyobjc_available():
+    return importlib.util.find_spec("AppKit") is not None
+
+
+def _pip_install_pyobjc():
+    # --isolated ignores pip.conf/env extra-index-urls (e.g. a corporate
+    # Artifactory mirror) that may not carry PyObjC and would otherwise stall
+    # the install with retries against an unreachable/VPN-only index.
+    return subprocess.run(
+        [PYTHON, "-m", "pip", "install", "--user", "--no-input", "--isolated",
+         "pyobjc-framework-Cocoa"],
+        capture_output=True, text=True,
+    )
+
+
+def ensure_pyobjc():
+    """bar.py needs AppKit/Foundation. Some macOS/Xcode setups point
+    /usr/bin/python3 at the Command Line Tools' interpreter instead of the
+    old Apple-framework Python that used to bundle PyObjC, so it isn't
+    always there. Install it as a user site-package of that same
+    interpreter rather than switching interpreters, so bar.py keeps running
+    under the Apple-signed /usr/bin/python3 (see README's Santa notes).
+    """
+    if _pyobjc_available():
+        print("  PyObjC already available")
+        return True
+    print("  PyObjC (AppKit) not found under %s; installing..." % PYTHON)
+    result = _pip_install_pyobjc()
+    if result.returncode != 0:
+        print("  WARNING: failed to install PyObjC, so the menu bar app won't start.")
+        print("  Install it manually: %s -m pip install --user pyobjc-framework-Cocoa" % PYTHON)
+        print(result.stderr.strip()[-2000:])
+        return False
+    print("  installed PyObjC")
+    return True
+
+
 def install_launch_agent():
     os.makedirs(LAUNCH_AGENTS, exist_ok=True)
     os.makedirs(DATA_DIR, exist_ok=True)
@@ -120,6 +158,7 @@ def install_launch_agent():
 def main():
     print("Installing claude-watch...")
     merge_settings()
+    ensure_pyobjc()
     install_launch_agent()
     print("\nDone. The 🛰️ menu bar icon should appear shortly.")
     print("Open a new Claude Code session to see the live feed.")
