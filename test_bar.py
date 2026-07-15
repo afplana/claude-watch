@@ -184,5 +184,17 @@ class BannerActionTests(unittest.TestCase):
         self.assertEqual(bar.snooze_seconds(), 300.0)
 
 
+class RecentAlertsTests(unittest.TestCase):
+    def test_returns_newest_first_capped(self):
+        alerts = [{"label": "a"}, {"label": "b"}, {"label": "c"}]
+        self.assertEqual([x["label"] for x in bar.recent_alerts(alerts, 2)], ["c", "b"])
+
+    def test_handles_fewer_than_n(self):
+        self.assertEqual(bar.recent_alerts([{"label": "a"}], 5), [{"label": "a"}])
+
+    def test_empty(self):
+        self.assertEqual(bar.recent_alerts([], 5), [])
+
+
 if __name__ == "__main__":
     unittest.main()
