@@ -11,10 +11,13 @@ alerts** for your Claude Code sessions.
   include the actual pending command — e.g. `🟡 api-service — approve?` /
   `Bash: rm -rf build/` — correlated from the `PreToolUse` that triggered the
   prompt, since Claude's own message is generic ("Claude needs your permission").
-- **Click an alert to jump to its terminal.** The hook records the session's
-  `TERM_PROGRAM`, so clicking a banner (or "Focus …" in a session's submenu)
-  raises that terminal app — handy when juggling several Claude instances.
-  (Best-effort: it raises the app, not the specific tab.)
+- **Click an alert to jump to its terminal tab.** The hook records the
+  session's `TERM_PROGRAM` plus its tab identifiers (`ITERM_SESSION_ID` /
+  `TERM_SESSION_ID` and `tty`), so clicking a banner (or "Focus …" in a
+  session's submenu) raises the **exact iTerm2 session or Apple Terminal tab**
+  the session runs in — handy when juggling several Claude instances. Falls
+  back to raising the terminal app when the specific tab can't be resolved
+  (other terminals, or identifiers unavailable).
 - **Per-project mute.** Each session's submenu has "Mute this project" to silence
   just the noisy repo while keeping alerts for the one you care about; a global
   mute is still there too. Muted projects show a 🔇 in the dropdown.

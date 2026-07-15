@@ -12,6 +12,7 @@ influence the agent), and always exits 0 even on error. Runs under the system
 
 import json
 import os
+import subprocess
 import sys
 from datetime import datetime
 
@@ -42,7 +43,32 @@ def summarize_tool(tool_name, tool_input):
     return ""
 
 
-def normalize(raw, term=""):
+def _controlling_tty():
+    """Best-effort controlling terminal device (e.g. '/dev/ttys003'); '' if unknown.
+
+    Hooks receive JSON on a stdin pipe, so the fast fd check usually misses;
+    fall back to ps for the process's controlling terminal. Bounded so it can
+    never hang the agent.
+    """
+    for fd in (0, 1, 2):
+        try:
+            if os.isatty(fd):
+                return os.ttyname(fd)
+        except OSError:
+            pass
+    try:
+        out = subprocess.run(
+            ["ps", "-o", "tty=", "-p", str(os.getpid())],
+            capture_output=True, text=True, timeout=1,
+        ).stdout.strip()
+    except Exception:
+        return ""
+    if not out or out in ("?", "??"):
+        return ""
+    return out if out.startswith("/dev/") else "/dev/" + out
+
+
+def normalize(raw, term="", term_session="", tty=""):
     """Map a raw Claude Code hook payload to a flat event record.
 
     `term` is the TERM_PROGRAM of the terminal Claude runs in (captured in
@@ -75,6 +101,8 @@ def normalize(raw, term=""):
         "tool": tool,
         "detail": detail,
         "term": term,
+        "term_session": term_session,
+        "tty": tty,
     }
 
 
@@ -90,7 +118,12 @@ def main():
         return  # nothing usable on stdin; stay invisible
     try:
         os.makedirs(DATA_DIR, exist_ok=True)
-        record = normalize(raw, os.environ.get("TERM_PROGRAM", ""))
+        record = normalize(
+            raw,
+            os.environ.get("TERM_PROGRAM", ""),
+            os.environ.get("ITERM_SESSION_ID") or os.environ.get("TERM_SESSION_ID", ""),
+            _controlling_tty(),
+        )
         with open(events_path(), "a") as fh:
             fh.write(json.dumps(record) + "\n")
     except Exception as exc:  # never crash the agent
