@@ -63,6 +63,7 @@ CONFIG_PATH = os.path.join(DATA_DIR, "config.json")
 POLL_SECONDS = 1.0
 MAX_SESSIONS_SHOWN = 8
 MAX_EVENTS_PER_SESSION = 3
+MAX_ALERTS_SHOWN = 5
 
 # Menu bar glyph. Swap for any single character/emoji you like, e.g.
 # "🤖", "👾" (space invader), "🦾", "⚡", "🧠".
@@ -118,6 +119,11 @@ def session_label(sess, width=48):
         return project
     label = "%s — %s" % (project, title)
     return label if len(label) <= width else label[: width - 1] + "…"
+
+
+def recent_alerts(alerts, n=MAX_ALERTS_SHOWN):
+    """The last n fired alerts, newest first."""
+    return list(alerts)[-n:][::-1]
 
 
 # --------------------------------------------------------------- mute helpers
@@ -531,6 +537,8 @@ def apply_event(app, ev, notify_new):
         sess["events"].append(ev)
 
     if notify_new and not is_muted(app.config, sess["project"]):
+        if not hasattr(app, "alerts"):
+            app.alerts = []
         project = sess["project"]
         term = sess.get("term")
         ts = sess.get("term_session", "")
@@ -539,10 +547,14 @@ def apply_event(app, ev, notify_new):
         if event == "Stop":
             show_banner(app, "✅ %s" % label, "Claude finished — your turn.",
                         "Glass", term=term, term_session=ts, tty=tty)
+            app.alerts.append({"ts": ev.get("ts", ""), "label": label,
+                               "kind": "done"})
         elif event == "Notification":
             title, text, sound = notification_alert(project, ev.get("detail", ""), sess.get("pending"))
             cmd = pending_command_text(sess)
             show_banner(app, title, text, sound, term=term, term_session=ts, tty=tty, command_text=cmd)
+            app.alerts.append({"ts": ev.get("ts", ""), "label": label,
+                               "kind": "waiting"})
 
 
 def consume(app, notify_new):
@@ -640,6 +652,14 @@ def build_menu(app):
             add_item(menu, app, "      %s" % describe(ev))
         menu.addItem_(NSMenuItem.separatorItem())
 
+    alerts = recent_alerts(getattr(app, "alerts", []))
+    if alerts:
+        menu.addItem_(NSMenuItem.separatorItem())
+        add_item(menu, app, "Recent alerts")
+        for a in alerts:
+            icon = STATUS_EMOJI[DONE] if a["kind"] == "done" else STATUS_EMOJI[WAITING]
+            add_item(menu, app, "  %s %s" % (icon, a["label"]))
+
     mute_title = "Unmute notifications" if app.config.get("muted") else "Mute notifications"
     add_item(menu, app, mute_title, action="toggleMute:")
     add_item(menu, app, "Quit claude-watch", action="quit:", key="q")
@@ -679,6 +699,7 @@ class AppDelegate(NSObject):
     def applicationDidFinishLaunching_(self, _notification):
         os.makedirs(DATA_DIR, exist_ok=True)
         self.sessions = {}
+        self.alerts = []
         self.config = load_config()
         self.demo = "--demo" in sys.argv
         self.day = datetime.now().strftime("%Y-%m-%d")
