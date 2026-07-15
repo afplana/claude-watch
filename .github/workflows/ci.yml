@@ -12,9 +12,13 @@ jobs:
 
       # bar.py imports AppKit/Foundation (PyObjC), which the CLT /usr/bin/python3
       # does not bundle on newer macOS — install it as a user site-package of the
-      # same interpreter the tool runs under.
+      # same interpreter the tool runs under. The runner's stock pip is too old
+      # and tries to BUILD pyobjc-core from source (which fails on the new
+      # clang's -Werror); upgrade pip first, then force a prebuilt wheel.
       - name: Install PyObjC for /usr/bin/python3
-        run: /usr/bin/python3 -m pip install --user --isolated pyobjc-framework-Cocoa
+        run: |
+          /usr/bin/python3 -m pip install --user --upgrade pip
+          /usr/bin/python3 -m pip install --user --only-binary=:all: pyobjc-framework-Cocoa
 
       # Run every test_*.py present on this branch (test_install.py only exists
       # once the PyObjC-bootstrap fix is merged, so discover rather than hardcode).
