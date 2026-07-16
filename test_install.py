@@ -10,6 +10,17 @@ from unittest.mock import patch
 import install
 
 
+class PipInstallPyobjcTests(unittest.TestCase):
+    @patch.object(install.subprocess, "run")
+    def test_forces_binary_wheels(self, run):
+        install._pip_install_pyobjc()
+        args = run.call_args[0][0]
+        # never compile pyobjc-core from source: the stock python3 has an old
+        # pip and modern clang turns the build into a fatal error.
+        self.assertIn("--only-binary=:all:", args)
+        self.assertIn("pyobjc-framework-Cocoa", args)
+
+
 class EnsurePyobjcTests(unittest.TestCase):
     @patch.object(install, "_pip_install_pyobjc")
     @patch.object(install, "_pyobjc_available", return_value=True)
