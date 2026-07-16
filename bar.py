@@ -85,12 +85,43 @@ def parse_ts(ts):
         return None
 
 
-def is_active(sess, now, idle=IDLE_SECONDS):
-    """A session counts as active only if running/waiting AND recently active."""
-    if sess.get("status") not in (ACTIVE, WAITING):
-        return False
+def _recent(sess, now, idle):
+    """True if the session has activity within the idle window."""
     t = parse_ts(sess.get("last_ts", ""))
     return t is not None and (now - t).total_seconds() <= idle
+
+
+def is_active(sess, now, idle=IDLE_SECONDS):
+    """A session is 'actively working' if running/waiting AND recently active.
+    Used to pick the live status emoji, NOT to count sessions (see is_open)."""
+    if sess.get("status") not in (ACTIVE, WAITING):
+        return False
+    return _recent(sess, now, idle)
+
+
+def is_open(sess, now, idle=IDLE_SECONDS):
+    """A session is 'open' — and counted in the menu-bar number — if it's
+    running, waiting, or finished-but-recent. Only SessionEnd or going idle for
+    `idle` seconds drops it. Counting DONE keeps a finished-turn session ("your
+    turn") on the tally instead of flickering off the instant a turn ends (#8)."""
+    if sess.get("status") not in (ACTIVE, WAITING, DONE):
+        return False
+    return _recent(sess, now, idle)
+
+
+def session_breakdown(sessions, now, idle=IDLE_SECONDS):
+    """Count open sessions and split them into 'working' (running) vs 'awaiting'
+    you (needs permission, or finished its turn)."""
+    counts = {"open": 0, "working": 0, "awaiting": 0}
+    for sess in sessions:
+        if not is_open(sess, now, idle):
+            continue
+        counts["open"] += 1
+        if sess.get("status") == ACTIVE:
+            counts["working"] += 1
+        else:  # WAITING (permission) or DONE (your turn) — both need you
+            counts["awaiting"] += 1
+    return counts
 
 
 def display_emoji(sess, now, idle=IDLE_SECONDS):
@@ -632,11 +663,15 @@ def project_submenu(app, sess):
 def build_menu(app):
     now = datetime.now()
     sessions = ordered_sessions(app)
-    active = sum(1 for s in sessions if is_active(s, now))
-    app.statusitem.button().setTitle_("%s %d" % (ICON, active) if active else ICON)
+    b = session_breakdown(sessions, now)
+    app.statusitem.button().setTitle_("%s %d" % (ICON, b["open"]) if b["open"] else ICON)
 
     menu = NSMenu.alloc().init()
-    add_item(menu, app, "Claude Code — %d active" % active)
+    if b["open"]:
+        add_item(menu, app, "Claude Code — %d open · %d working · %d awaiting you"
+                 % (b["open"], b["working"], b["awaiting"]))
+    else:
+        add_item(menu, app, "Claude Code — no open sessions")
     menu.addItem_(NSMenuItem.separatorItem())
 
     if not sessions:
