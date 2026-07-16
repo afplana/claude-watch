@@ -97,9 +97,14 @@ def _pip_install_pyobjc():
     # --isolated ignores pip.conf/env extra-index-urls (e.g. a corporate
     # Artifactory mirror) that may not carry PyObjC and would otherwise stall
     # the install with retries against an unreachable/VPN-only index.
+    # --only-binary=:all: forbids building pyobjc-core from its sdist. The stock
+    # /usr/bin/python3 ships an old pip that would otherwise compile it, and the
+    # compile fails under recent clang (-Wdefault-const-init-var-unsafe is now
+    # fatal), leaving a dead LaunchAgent and no menu bar icon. Prebuilt wheels
+    # exist for every supported interpreter, so binary-only is the right default.
     return subprocess.run(
         [PYTHON, "-m", "pip", "install", "--user", "--no-input", "--isolated",
-         "pyobjc-framework-Cocoa"],
+         "--only-binary=:all:", "pyobjc-framework-Cocoa"],
         capture_output=True, text=True,
     )
 
@@ -119,7 +124,7 @@ def ensure_pyobjc():
     result = _pip_install_pyobjc()
     if result.returncode != 0:
         print("  WARNING: failed to install PyObjC, so the menu bar app won't start.")
-        print("  Install it manually: %s -m pip install --user pyobjc-framework-Cocoa" % PYTHON)
+        print("  Install it manually: %s -m pip install --user --only-binary=:all: pyobjc-framework-Cocoa" % PYTHON)
         print(result.stderr.strip()[-2000:])
         return False
     print("  installed PyObjC")
