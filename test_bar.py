@@ -81,6 +81,64 @@ class ActivityAgingTests(unittest.TestCase):
         self.assertFalse(bar.is_active(self._sess(bar.ACTIVE, "garbage"), self.now))
 
 
+class IsOpenTests(unittest.TestCase):
+    """A session is 'open' (counted in the menu-bar number) if it's running,
+    waiting, OR finished-but-recent — only SessionEnd or 10-min idle drops it.
+    This is what fixes the 1↔2 flap: a session that just finished a turn (DONE)
+    must stay counted while its CLI is still open (issue #8)."""
+
+    def setUp(self):
+        self.now = datetime(2026, 6, 24, 13, 30, 0)
+
+    def _sess(self, status, last_ts="2026-06-24T13:29:00"):  # 1 min ago
+        return {"status": status, "last_ts": last_ts}
+
+    def test_recent_active_is_open(self):
+        self.assertTrue(bar.is_open(self._sess(bar.ACTIVE), self.now))
+
+    def test_recent_waiting_is_open(self):
+        self.assertTrue(bar.is_open(self._sess(bar.WAITING), self.now))
+
+    def test_recent_done_is_open(self):
+        # The fix: a finished-turn session ("your turn") stays counted.
+        self.assertTrue(bar.is_open(self._sess(bar.DONE), self.now))
+
+    def test_ended_is_not_open(self):
+        self.assertFalse(bar.is_open(self._sess(bar.ENDED), self.now))
+
+    def test_stale_done_ages_out(self):
+        s = self._sess(bar.DONE, "2026-06-24T09:48:00")  # hours ago
+        self.assertFalse(bar.is_open(s, self.now))
+
+    def test_bad_timestamp_is_not_open(self):
+        self.assertFalse(bar.is_open(self._sess(bar.ACTIVE, "garbage"), self.now))
+
+
+class SessionBreakdownTests(unittest.TestCase):
+    def setUp(self):
+        self.now = datetime(2026, 6, 24, 13, 30, 0)
+
+    def _sess(self, status, last_ts="2026-06-24T13:29:00"):
+        return {"status": status, "last_ts": last_ts}
+
+    def test_counts_working_and_awaiting_among_open(self):
+        sessions = [
+            self._sess(bar.ACTIVE),                               # working
+            self._sess(bar.WAITING),                              # awaiting (permission)
+            self._sess(bar.DONE),                                 # awaiting (your turn)
+            self._sess(bar.ENDED),                                # not open
+            self._sess(bar.ACTIVE, "2026-06-24T09:48:00"),        # stale -> not open
+        ]
+        b = bar.session_breakdown(sessions, self.now)
+        self.assertEqual(b["open"], 3)
+        self.assertEqual(b["working"], 1)
+        self.assertEqual(b["awaiting"], 2)
+
+    def test_empty(self):
+        self.assertEqual(bar.session_breakdown([], self.now),
+                         {"open": 0, "working": 0, "awaiting": 0})
+
+
 class DescribeTests(unittest.TestCase):
     def test_tool_event(self):
         self.assertEqual(
