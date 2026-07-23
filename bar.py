@@ -702,7 +702,14 @@ def build_menu(app):
     now = datetime.now()
     sessions = ordered_sessions(app)
     b = session_breakdown(sessions, now)
-    app.statusitem.button().setTitle_("%s %d" % (ICON, b["open"]) if b["open"] else ICON)
+    needs = b["waiting"] + b["done"]
+    if needs:
+        title = "%s %d" % (STATUS_EMOJI[WAITING], needs)   # 🟡 N — something needs you
+    elif b["open"]:
+        title = "%s %d" % (ICON, b["open"])                # 🛰️ N — all working
+    else:
+        title = ICON                                       # 🛰️ — nothing open
+    app.statusitem.button().setTitle_(title)
 
     menu = NSMenu.alloc().init()
     if b["open"]:
@@ -711,6 +718,19 @@ def build_menu(app):
     else:
         add_item(menu, app, "Claude Code — no open sessions")
     menu.addItem_(NSMenuItem.separatorItem())
+
+    waiting_list = needs_you(sessions, now)
+    if waiting_list:
+        add_item(menu, app, "Needs you (%d)" % len(waiting_list))
+        for sess in waiting_list:
+            item = add_item(menu, app, "  %s" % needs_you_row(sess, now),
+                            action="focusProject:")
+            item.setRepresentedObject_({
+                "term": sess.get("term", ""),
+                "term_session": sess.get("term_session", ""),
+                "tty": sess.get("tty", ""),
+            })
+        menu.addItem_(NSMenuItem.separatorItem())
 
     if not sessions:
         add_item(menu, app, "  no sessions yet today")
