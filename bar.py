@@ -358,6 +358,14 @@ def notification_alert(project, message, pending):
 
 BANNER_W, BANNER_H, BANNER_MARGIN, BANNER_GAP = 360, 140, 16, 8
 BANNER_SECONDS = 8.0
+MAX_BANNERS = 3
+
+
+def banner_wait_body(base, age):
+    """Banner body with a wait-time suffix, once the wait is worth showing."""
+    if age and age != "just now":
+        return "%s · waiting %s" % (base, age)
+    return base
 
 
 class BannerController(NSObject):
@@ -450,16 +458,29 @@ def _banner_button(frame, title, target, action):
     return b
 
 
-def show_banner(app, title, body, sound=None, term=None, term_session="", tty="", command_text=""):
+def _enforce_banner_cap(app, cap=MAX_BANNERS):
+    """Keep at most `cap` banners on screen; dismiss the oldest first."""
+    banners = getattr(app, "banners", [])
+    while len(banners) >= cap:
+        banners[0].dismiss_(None)
+
+
+def show_banner(app, title, body, sound=None, term=None, term_session="", tty="",
+                 command_text="", sticky=False, sid=None):
     """Draw our own notification banner (top-right), since macOS system
     notifications don't render on this machine. Must run on the main thread.
 
     Renders a row of real buttons along the bottom: Focus tab (raises the
     session's terminal tab), Copy command (only when `command_text` is
     non-empty), Snooze (re-show this same banner after a delay), Dismiss.
-    App-side only — these control the app/terminal/clipboard, never Claude."""
+    App-side only — these control the app/terminal/clipboard, never Claude.
+
+    `sticky` banners (permission prompts) get no auto-dismiss timer since
+    Claude is blocked waiting on them; `sid` tags which session they belong
+    to so they can be found and auto-closed later."""
     if not hasattr(app, "banners"):
         app.banners = []
+    _enforce_banner_cap(app)
 
     vf = NSScreen.mainScreen().visibleFrame()
     index = len(app.banners)
@@ -501,6 +522,10 @@ def show_banner(app, title, body, sound=None, term=None, term_session="", tty=""
     controller.term_session = term_session
     controller.tty = tty
     controller.command_text = command_text
+    controller.sticky = sticky
+    controller.sid = sid
+    controller.body_tf = body_tf
+    controller.base_body = body
     controller.payload = {
         "title": title,
         "body": body,
@@ -531,14 +556,35 @@ def show_banner(app, title, body, sound=None, term=None, term_session="", tty=""
         content.addSubview_(button)
 
     panel.orderFrontRegardless()
-    controller.timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-        BANNER_SECONDS, controller, "dismiss:", None, False)
+    if not sticky:
+        controller.timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            BANNER_SECONDS, controller, "dismiss:", None, False)
     app.banners.append(controller)
 
     if sound:
         snd = NSSound.soundNamed_(sound)
         if snd:
             snd.play()
+
+
+def dismiss_permission_banners(app, sid):
+    """Close any sticky permission banner for a session that has moved on."""
+    for controller in list(getattr(app, "banners", [])):
+        if getattr(controller, "sticky", False) and getattr(controller, "sid", None) == sid:
+            controller.dismiss_(None)
+
+
+def refresh_banner_waits(app, now):
+    """Update sticky banners' bodies with the current wait time."""
+    for controller in getattr(app, "banners", []):
+        if not getattr(controller, "sticky", False):
+            continue
+        body_tf = getattr(controller, "body_tf", None)
+        if body_tf is None:
+            continue
+        sess = app.sessions.get(getattr(controller, "sid", None))
+        age = ago(sess.get("last_ts", ""), now) if sess else ""
+        body_tf.setStringValue_(banner_wait_body(getattr(controller, "base_body", ""), age))
 
 
 def load_config():
@@ -599,6 +645,8 @@ def apply_event(app, ev, notify_new):
         sess["pending"] = None
 
     sess["status"] = event_status(event)
+    if sess["status"] != WAITING:
+        dismiss_permission_banners(app, sid)
     sess["last_ts"] = ev.get("ts", sess["last_ts"])
     if event == "UserPromptSubmit" and not sess.get("title"):
         sess["title"] = ev.get("detail", "")
@@ -621,7 +669,8 @@ def apply_event(app, ev, notify_new):
         elif event == "Notification":
             title, text, sound = notification_alert(project, ev.get("detail", ""), sess.get("pending"))
             cmd = pending_command_text(sess)
-            show_banner(app, title, text, sound, term=term, term_session=ts, tty=tty, command_text=cmd)
+            show_banner(app, title, text, sound, term=term, term_session=ts, tty=tty,
+                        command_text=cmd, sticky=True, sid=sid)
             app.alerts.append({"ts": ev.get("ts", ""), "label": label,
                                "kind": "waiting"})
 
@@ -829,6 +878,7 @@ class AppDelegate(NSObject):
                 self.offset = 0
         consume(self, notify_new=True)
         build_menu(self)
+        refresh_banner_waits(self, datetime.now())
 
     def toggleMute_(self, _sender):
         self.config["muted"] = not self.config.get("muted", False)

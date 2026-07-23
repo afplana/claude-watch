@@ -341,5 +341,14 @@ class NeedsYouRowTests(unittest.TestCase):
         self.assertNotIn("·", row)
 
 
+class BannerWaitBodyTests(unittest.TestCase):
+    def test_appends_wait_when_meaningful(self):
+        self.assertEqual(bar.banner_wait_body("Bash: ls", "6m"), "Bash: ls · waiting 6m")
+
+    def test_omits_when_just_now_or_empty(self):
+        self.assertEqual(bar.banner_wait_body("Bash: ls", "just now"), "Bash: ls")
+        self.assertEqual(bar.banner_wait_body("Bash: ls", ""), "Bash: ls")
+
+
 if __name__ == "__main__":
     unittest.main()
