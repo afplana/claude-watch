@@ -426,7 +426,8 @@ class _SnoozeReshow(NSObject):
         p = self.payload
         show_banner(self.app, p["title"], p["body"], p.get("sound"),
                     term=p.get("term"), term_session=p.get("term_session", ""),
-                    tty=p.get("tty", ""), command_text=p.get("command_text", ""))
+                    tty=p.get("tty", ""), command_text=p.get("command_text", ""),
+                    sticky=p.get("sticky", False), sid=p.get("sid"))
 
 
 def _make_snooze_reshow(app, payload):
@@ -534,6 +535,8 @@ def show_banner(app, title, body, sound=None, term=None, term_session="", tty=""
         "term_session": term_session,
         "tty": tty,
         "command_text": command_text,
+        "sticky": sticky,
+        "sid": sid,
     }
 
     # Button row along the bottom: Focus tab, Copy command (only when there's
