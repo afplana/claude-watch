@@ -135,8 +135,10 @@ class SessionBreakdownTests(unittest.TestCase):
         self.assertEqual(b["awaiting"], 2)
 
     def test_empty(self):
-        self.assertEqual(bar.session_breakdown([], self.now),
-                         {"open": 0, "working": 0, "awaiting": 0})
+        b = bar.session_breakdown([], self.now)
+        self.assertEqual(b["open"], 0)
+        self.assertEqual(b["working"], 0)
+        self.assertEqual(b["awaiting"], 0)
 
 
 class DescribeTests(unittest.TestCase):
@@ -276,6 +278,67 @@ class AgoTests(unittest.TestCase):
     def test_bad_or_empty_ts(self):
         self.assertEqual(bar.ago("", self.now), "")
         self.assertEqual(bar.ago("garbage", self.now), "")
+
+
+class SessionBreakdownSplitTests(unittest.TestCase):
+    def setUp(self):
+        self.now = datetime(2026, 6, 24, 13, 30, 0)
+
+    def _s(self, status, last_ts="2026-06-24T13:29:00"):
+        return {"status": status, "last_ts": last_ts}
+
+    def test_splits_waiting_and_done(self):
+        b = bar.session_breakdown(
+            [self._s(bar.ACTIVE), self._s(bar.WAITING), self._s(bar.DONE),
+             self._s(bar.DONE), self._s(bar.ENDED)], self.now)
+        self.assertEqual(b["open"], 4)
+        self.assertEqual(b["working"], 1)
+        self.assertEqual(b["waiting"], 1)
+        self.assertEqual(b["done"], 2)
+        self.assertEqual(b["awaiting"], 3)  # waiting + done
+
+
+class NeedsYouTests(unittest.TestCase):
+    def setUp(self):
+        self.now = datetime(2026, 6, 24, 13, 30, 0)
+
+    def _s(self, status, ago_secs, project="p"):
+        ts = (self.now - timedelta(seconds=ago_secs)).isoformat()
+        return {"status": status, "last_ts": ts, "project": project, "title": ""}
+
+    def test_permission_before_finished_then_longest_wait_first(self):
+        sessions = [
+            self._s(bar.DONE, 30, "done-recent"),
+            self._s(bar.WAITING, 60, "perm-newer"),
+            self._s(bar.WAITING, 300, "perm-older"),
+            self._s(bar.DONE, 600, "done-older"),
+            self._s(bar.ACTIVE, 10, "working"),      # excluded
+            self._s(bar.ENDED, 10, "ended"),         # excluded
+        ]
+        got = [s["project"] for s in bar.needs_you(sessions, self.now)]
+        self.assertEqual(got, ["perm-older", "perm-newer", "done-older", "done-recent"])
+
+    def test_excludes_stale(self):
+        stale = self._s(bar.WAITING, 100000, "stale")  # long idle
+        self.assertEqual(bar.needs_you([stale], self.now), [])
+
+
+class NeedsYouRowTests(unittest.TestCase):
+    def setUp(self):
+        self.now = datetime(2026, 6, 24, 13, 30, 0)
+
+    def test_row_has_emoji_label_and_age(self):
+        s = {"status": bar.WAITING, "project": "web-app", "title": "fix bug",
+             "last_ts": (self.now - timedelta(seconds=360)).isoformat()}
+        row = bar.needs_you_row(s, self.now)
+        self.assertIn(bar.STATUS_EMOJI[bar.WAITING], row)
+        self.assertIn("web-app — fix bug", row)
+        self.assertIn("· 6m", row)
+
+    def test_row_omits_age_when_unknown(self):
+        s = {"status": bar.DONE, "project": "p", "title": "", "last_ts": "garbage"}
+        row = bar.needs_you_row(s, self.now)
+        self.assertNotIn("·", row)
 
 
 if __name__ == "__main__":

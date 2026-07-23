@@ -125,18 +125,41 @@ def is_open(sess, now, idle=IDLE_SECONDS):
 
 
 def session_breakdown(sessions, now, idle=IDLE_SECONDS):
-    """Count open sessions and split them into 'working' (running) vs 'awaiting'
-    you (needs permission, or finished its turn)."""
-    counts = {"open": 0, "working": 0, "awaiting": 0}
+    """Count open sessions, split into working (running), waiting (permission),
+    and done (finished its turn). 'awaiting' = waiting + done (both need you)."""
+    counts = {"open": 0, "working": 0, "waiting": 0, "done": 0, "awaiting": 0}
     for sess in sessions:
         if not is_open(sess, now, idle):
             continue
         counts["open"] += 1
-        if sess.get("status") == ACTIVE:
+        status = sess.get("status")
+        if status == ACTIVE:
             counts["working"] += 1
-        else:  # WAITING (permission) or DONE (your turn) — both need you
+        elif status == WAITING:
+            counts["waiting"] += 1
+            counts["awaiting"] += 1
+        else:  # DONE (is_open already excluded ENDED/stale)
+            counts["done"] += 1
             counts["awaiting"] += 1
     return counts
+
+
+def needs_you(sessions, now, idle=IDLE_SECONDS):
+    """Open sessions that need you, most urgent first: permission (WAITING)
+    before finished (DONE); within each tier, longest wait first."""
+    awaiting = [s for s in sessions
+                if is_open(s, now, idle) and s.get("status") in (WAITING, DONE)]
+    tier = {WAITING: 0, DONE: 1}
+    awaiting.sort(key=lambda s: (tier.get(s.get("status"), 2), s.get("last_ts", "")))
+    return awaiting
+
+
+def needs_you_row(sess, now):
+    """Dropdown row for a session that needs you: emoji + label + wait time."""
+    emoji = STATUS_EMOJI.get(sess.get("status"), "")
+    age = ago(sess.get("last_ts", ""), now)
+    suffix = " · %s" % age if age else ""
+    return "%s  %s%s" % (emoji, session_label(sess), suffix)
 
 
 def display_emoji(sess, now, idle=IDLE_SECONDS):
