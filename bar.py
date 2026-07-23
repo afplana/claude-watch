@@ -867,10 +867,19 @@ class AppDelegate(NSObject):
         )
 
         if "--banner-test" in sys.argv:
+            # Seed a fake awaiting session so the sticky permission banner's
+            # live wait time ("· waiting Nm") has a timestamp to count from.
+            self.sessions["banner-test"] = {
+                "project": "api-service", "status": WAITING,
+                "last_ts": datetime.now().isoformat(timespec="seconds"),
+                "term": os.environ.get("TERM_PROGRAM", ""),
+                "term_session": "", "tty": "", "title": "", "pending": None,
+            }
             show_banner(self, "🟡 api-service — approve?",
                         "Bash: rm -rf build/ && mvn clean install", "Ping",
                         term=os.environ.get("TERM_PROGRAM", ""),
-                        command_text="rm -rf build/ && mvn clean install")
+                        command_text="rm -rf build/ && mvn clean install",
+                        sticky=True, sid="banner-test")
 
     def tick_(self, _timer):
         if not self.demo:
