@@ -7,7 +7,7 @@ Run:  /usr/bin/python3 test_bar.py
 """
 
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import bar
 
@@ -252,6 +252,30 @@ class RecentAlertsTests(unittest.TestCase):
 
     def test_empty(self):
         self.assertEqual(bar.recent_alerts([], 5), [])
+
+
+class AgoTests(unittest.TestCase):
+    def setUp(self):
+        self.now = datetime(2026, 7, 22, 12, 0, 0)
+
+    def _ago(self, secs):
+        return bar.ago((self.now - timedelta(seconds=secs)).isoformat(), self.now)
+
+    def test_just_now_under_a_minute(self):
+        self.assertEqual(self._ago(5), "just now")
+        self.assertEqual(self._ago(59), "just now")
+
+    def test_minutes(self):
+        self.assertEqual(self._ago(60), "1m")
+        self.assertEqual(self._ago(360), "6m")
+
+    def test_hours(self):
+        self.assertEqual(self._ago(3600), "1h")
+        self.assertEqual(self._ago(9000), "2h")
+
+    def test_bad_or_empty_ts(self):
+        self.assertEqual(bar.ago("", self.now), "")
+        self.assertEqual(bar.ago("garbage", self.now), "")
 
 
 if __name__ == "__main__":

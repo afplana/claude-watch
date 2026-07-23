@@ -85,6 +85,21 @@ def parse_ts(ts):
         return None
 
 
+def ago(ts, now):
+    """Compact time-since string: 'just now' (<1m), 'Nm' (<1h), 'Nh'.
+    Returns '' for an empty or unparseable timestamp."""
+    t = parse_ts(ts)
+    if t is None:
+        return ""
+    secs = (now - t).total_seconds()
+    if secs < 60:
+        return "just now"
+    mins = int(secs // 60)
+    if mins < 60:
+        return "%dm" % mins
+    return "%dh" % (mins // 60)
+
+
 def _recent(sess, now, idle):
     """True if the session has activity within the idle window."""
     t = parse_ts(sess.get("last_ts", ""))
