@@ -3,14 +3,22 @@
 A tiny, local, Santa-safe replacement for Masko: a **menu bar live feed + pop-up
 alerts** for your Claude Code sessions.
 
-- 🛰️ menu bar icon shows how many sessions are active; the dropdown lists each
-  session (project · status · last few actions). A session stops counting as
-  active after 10 min idle, so closed CLI instances don't linger.
-- A **floating banner** (top-right, auto-dismiss after 8s) when a session
-  **finishes** (✅ "your turn") or **needs permission** (🟡). Permission alerts
-  include the actual pending command — e.g. `🟡 api-service — approve?` /
+- 🛰️ menu bar icon shows how many sessions are open; the dropdown lists each
+  session (project · status · last few actions). A session stops counting after
+  10 min idle, so closed CLI instances don't linger. When one or more sessions
+  **need you**, the icon turns **🟡 N** (that count), so you can tell "all
+  working" from "waiting on me" without opening the menu — and the dropdown
+  floats a **"Needs you"** group at the top: permission prompts first, then
+  finished-turn sessions, each showing how long it's waited (`· 6m`) and
+  **click-to-focus** its terminal tab.
+- A **floating banner** (top-right) when a session **finishes** (✅ "your turn",
+  auto-dismiss after 8s) or **needs permission** (🟡). Permission banners are
+  **sticky** — they stay until you act or the prompt is answered (Claude is
+  blocked, so they don't time out) and show how long you've been waited on.
+  They include the actual pending command — e.g. `🟡 api-service — approve?` /
   `Bash: rm -rf build/` — correlated from the `PreToolUse` that triggered the
   prompt, since Claude's own message is generic ("Claude needs your permission").
+  At most three banners show at once.
 - **Click an alert to jump to its terminal tab.** The hook records the
   session's `TERM_PROGRAM` plus its tab identifiers (`ITERM_SESSION_ID` /
   `TERM_SESSION_ID` and `tty`), so clicking a banner (or "Focus …" in a
@@ -87,9 +95,11 @@ installs the `com.claudewatch.bar` LaunchAgent, and starts the menu bar app.
 Restart any running Claude Code sessions so they pick up the new hooks.
 
 `bar.py` needs PyObjC (`AppKit`/`Foundation`) to draw the menu bar icon and
-banners. Older macOS shipped this with the system Python, but on newer
-machines `/usr/bin/python3` resolves to the Command Line Tools' interpreter,
-which doesn't bundle it. `install.py` detects this and runs
+banners. The Homebrew formula **vendors PyObjC wheels** under `libexec/vendor`
+so `brew install` works offline with no runtime pip. For a manual clone, older
+macOS shipped PyObjC with the system Python, but on newer machines
+`/usr/bin/python3` resolves to the Command Line Tools' interpreter, which doesn't
+bundle it. `install.py` detects this and runs
 `/usr/bin/python3 -m pip install --user pyobjc-framework-Cocoa` automatically
 — still the same Apple-signed interpreter, just with one more site-package,
 so it stays Santa-safe. If that install fails (e.g. no network), hooks still

@@ -31,6 +31,7 @@ jobs:
           done
 
       # Lint. E402 is ignored because bar.py intentionally imports AppKit after a
-      # warnings.filterwarnings() call (documented in bar.py).
+      # warnings.filterwarnings() call (documented in bar.py). Pin ruff — latest
+      # releases flag the project's intentional %-formatting and naive datetimes.
       - name: Lint
-        run: pipx run ruff check --extend-ignore E402 .
+        run: pipx run ruff==0.15.20 check --extend-ignore E402 .

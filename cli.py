@@ -22,7 +22,7 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PYTHON = "/usr/bin/python3"
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 
 PLIST_LABEL = "com.claudewatch.bar"
 PLIST_PATH = os.path.expanduser("~/Library/LaunchAgents/%s.plist" % PLIST_LABEL)

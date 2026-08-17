@@ -85,6 +85,21 @@ def parse_ts(ts):
         return None
 
 
+def ago(ts, now):
+    """Compact time-since string: 'just now' (<1m), 'Nm' (<1h), 'Nh'.
+    Returns '' for an empty or unparseable timestamp."""
+    t = parse_ts(ts)
+    if t is None:
+        return ""
+    secs = (now - t).total_seconds()
+    if secs < 60:
+        return "just now"
+    mins = int(secs // 60)
+    if mins < 60:
+        return "%dm" % mins
+    return "%dh" % (mins // 60)
+
+
 def _recent(sess, now, idle):
     """True if the session has activity within the idle window."""
     t = parse_ts(sess.get("last_ts", ""))
@@ -110,18 +125,41 @@ def is_open(sess, now, idle=IDLE_SECONDS):
 
 
 def session_breakdown(sessions, now, idle=IDLE_SECONDS):
-    """Count open sessions and split them into 'working' (running) vs 'awaiting'
-    you (needs permission, or finished its turn)."""
-    counts = {"open": 0, "working": 0, "awaiting": 0}
+    """Count open sessions, split into working (running), waiting (permission),
+    and done (finished its turn). 'awaiting' = waiting + done (both need you)."""
+    counts = {"open": 0, "working": 0, "waiting": 0, "done": 0, "awaiting": 0}
     for sess in sessions:
         if not is_open(sess, now, idle):
             continue
         counts["open"] += 1
-        if sess.get("status") == ACTIVE:
+        status = sess.get("status")
+        if status == ACTIVE:
             counts["working"] += 1
-        else:  # WAITING (permission) or DONE (your turn) — both need you
+        elif status == WAITING:
+            counts["waiting"] += 1
+            counts["awaiting"] += 1
+        else:  # DONE (is_open already excluded ENDED/stale)
+            counts["done"] += 1
             counts["awaiting"] += 1
     return counts
+
+
+def needs_you(sessions, now, idle=IDLE_SECONDS):
+    """Open sessions that need you, most urgent first: permission (WAITING)
+    before finished (DONE); within each tier, longest wait first."""
+    awaiting = [s for s in sessions
+                if is_open(s, now, idle) and s.get("status") in (WAITING, DONE)]
+    tier = {WAITING: 0, DONE: 1}
+    awaiting.sort(key=lambda s: (tier.get(s.get("status"), 2), s.get("last_ts", "")))
+    return awaiting
+
+
+def needs_you_row(sess, now):
+    """Dropdown row for a session that needs you: emoji + label + wait time."""
+    emoji = STATUS_EMOJI.get(sess.get("status"), "")
+    age = ago(sess.get("last_ts", ""), now)
+    suffix = " · %s" % age if age else ""
+    return "%s  %s%s" % (emoji, session_label(sess), suffix)
 
 
 def display_emoji(sess, now, idle=IDLE_SECONDS):
@@ -320,6 +358,14 @@ def notification_alert(project, message, pending):
 
 BANNER_W, BANNER_H, BANNER_MARGIN, BANNER_GAP = 360, 140, 16, 8
 BANNER_SECONDS = 8.0
+MAX_BANNERS = 3
+
+
+def banner_wait_body(base, age):
+    """Banner body with a wait-time suffix, once the wait is worth showing."""
+    if age and age != "just now":
+        return "%s · waiting %s" % (base, age)
+    return base
 
 
 class BannerController(NSObject):
@@ -380,7 +426,8 @@ class _SnoozeReshow(NSObject):
         p = self.payload
         show_banner(self.app, p["title"], p["body"], p.get("sound"),
                     term=p.get("term"), term_session=p.get("term_session", ""),
-                    tty=p.get("tty", ""), command_text=p.get("command_text", ""))
+                    tty=p.get("tty", ""), command_text=p.get("command_text", ""),
+                    sticky=p.get("sticky", False), sid=p.get("sid"))
 
 
 def _make_snooze_reshow(app, payload):
@@ -412,16 +459,29 @@ def _banner_button(frame, title, target, action):
     return b
 
 
-def show_banner(app, title, body, sound=None, term=None, term_session="", tty="", command_text=""):
+def _enforce_banner_cap(app, cap=MAX_BANNERS):
+    """Keep at most `cap` banners on screen; dismiss the oldest first."""
+    banners = getattr(app, "banners", [])
+    while len(banners) >= cap:
+        banners[0].dismiss_(None)
+
+
+def show_banner(app, title, body, sound=None, term=None, term_session="", tty="",
+                 command_text="", sticky=False, sid=None):
     """Draw our own notification banner (top-right), since macOS system
     notifications don't render on this machine. Must run on the main thread.
 
     Renders a row of real buttons along the bottom: Focus tab (raises the
     session's terminal tab), Copy command (only when `command_text` is
     non-empty), Snooze (re-show this same banner after a delay), Dismiss.
-    App-side only — these control the app/terminal/clipboard, never Claude."""
+    App-side only — these control the app/terminal/clipboard, never Claude.
+
+    `sticky` banners (permission prompts) get no auto-dismiss timer since
+    Claude is blocked waiting on them; `sid` tags which session they belong
+    to so they can be found and auto-closed later."""
     if not hasattr(app, "banners"):
         app.banners = []
+    _enforce_banner_cap(app)
 
     vf = NSScreen.mainScreen().visibleFrame()
     index = len(app.banners)
@@ -463,6 +523,10 @@ def show_banner(app, title, body, sound=None, term=None, term_session="", tty=""
     controller.term_session = term_session
     controller.tty = tty
     controller.command_text = command_text
+    controller.sticky = sticky
+    controller.sid = sid
+    controller.body_tf = body_tf
+    controller.base_body = body
     controller.payload = {
         "title": title,
         "body": body,
@@ -471,6 +535,8 @@ def show_banner(app, title, body, sound=None, term=None, term_session="", tty=""
         "term_session": term_session,
         "tty": tty,
         "command_text": command_text,
+        "sticky": sticky,
+        "sid": sid,
     }
 
     # Button row along the bottom: Focus tab, Copy command (only when there's
@@ -493,14 +559,35 @@ def show_banner(app, title, body, sound=None, term=None, term_session="", tty=""
         content.addSubview_(button)
 
     panel.orderFrontRegardless()
-    controller.timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-        BANNER_SECONDS, controller, "dismiss:", None, False)
+    if not sticky:
+        controller.timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            BANNER_SECONDS, controller, "dismiss:", None, False)
     app.banners.append(controller)
 
     if sound:
         snd = NSSound.soundNamed_(sound)
         if snd:
             snd.play()
+
+
+def dismiss_permission_banners(app, sid):
+    """Close any sticky permission banner for a session that has moved on."""
+    for controller in list(getattr(app, "banners", [])):
+        if getattr(controller, "sticky", False) and getattr(controller, "sid", None) == sid:
+            controller.dismiss_(None)
+
+
+def refresh_banner_waits(app, now):
+    """Update sticky banners' bodies with the current wait time."""
+    for controller in getattr(app, "banners", []):
+        if not getattr(controller, "sticky", False):
+            continue
+        body_tf = getattr(controller, "body_tf", None)
+        if body_tf is None:
+            continue
+        sess = app.sessions.get(getattr(controller, "sid", None))
+        age = ago(sess.get("last_ts", ""), now) if sess else ""
+        body_tf.setStringValue_(banner_wait_body(getattr(controller, "base_body", ""), age))
 
 
 def load_config():
@@ -561,6 +648,8 @@ def apply_event(app, ev, notify_new):
         sess["pending"] = None
 
     sess["status"] = event_status(event)
+    if sess["status"] != WAITING:
+        dismiss_permission_banners(app, sid)
     sess["last_ts"] = ev.get("ts", sess["last_ts"])
     if event == "UserPromptSubmit" and not sess.get("title"):
         sess["title"] = ev.get("detail", "")
@@ -583,7 +672,8 @@ def apply_event(app, ev, notify_new):
         elif event == "Notification":
             title, text, sound = notification_alert(project, ev.get("detail", ""), sess.get("pending"))
             cmd = pending_command_text(sess)
-            show_banner(app, title, text, sound, term=term, term_session=ts, tty=tty, command_text=cmd)
+            show_banner(app, title, text, sound, term=term, term_session=ts, tty=tty,
+                        command_text=cmd, sticky=True, sid=sid)
             app.alerts.append({"ts": ev.get("ts", ""), "label": label,
                                "kind": "waiting"})
 
@@ -664,7 +754,14 @@ def build_menu(app):
     now = datetime.now()
     sessions = ordered_sessions(app)
     b = session_breakdown(sessions, now)
-    app.statusitem.button().setTitle_("%s %d" % (ICON, b["open"]) if b["open"] else ICON)
+    needs = b["waiting"] + b["done"]
+    if needs:
+        title = "%s %d" % (STATUS_EMOJI[WAITING], needs)   # 🟡 N — something needs you
+    elif b["open"]:
+        title = "%s %d" % (ICON, b["open"])                # 🛰️ N — all working
+    else:
+        title = ICON                                       # 🛰️ — nothing open
+    app.statusitem.button().setTitle_(title)
 
     menu = NSMenu.alloc().init()
     if b["open"]:
@@ -673,6 +770,19 @@ def build_menu(app):
     else:
         add_item(menu, app, "Claude Code — no open sessions")
     menu.addItem_(NSMenuItem.separatorItem())
+
+    waiting_list = needs_you(sessions, now)
+    if waiting_list:
+        add_item(menu, app, "Needs you (%d)" % len(waiting_list))
+        for sess in waiting_list:
+            item = add_item(menu, app, "  %s" % needs_you_row(sess, now),
+                            action="focusProject:")
+            item.setRepresentedObject_({
+                "term": sess.get("term", ""),
+                "term_session": sess.get("term_session", ""),
+                "tty": sess.get("tty", ""),
+            })
+        menu.addItem_(NSMenuItem.separatorItem())
 
     if not sessions:
         add_item(menu, app, "  no sessions yet today")
@@ -757,10 +867,19 @@ class AppDelegate(NSObject):
         )
 
         if "--banner-test" in sys.argv:
+            # Seed a fake awaiting session so the sticky permission banner's
+            # live wait time ("· waiting Nm") has a timestamp to count from.
+            self.sessions["banner-test"] = {
+                "project": "api-service", "status": WAITING,
+                "last_ts": datetime.now().isoformat(timespec="seconds"),
+                "term": os.environ.get("TERM_PROGRAM", ""),
+                "term_session": "", "tty": "", "title": "", "pending": None,
+            }
             show_banner(self, "🟡 api-service — approve?",
                         "Bash: rm -rf build/ && mvn clean install", "Ping",
                         term=os.environ.get("TERM_PROGRAM", ""),
-                        command_text="rm -rf build/ && mvn clean install")
+                        command_text="rm -rf build/ && mvn clean install",
+                        sticky=True, sid="banner-test")
 
     def tick_(self, _timer):
         if not self.demo:
@@ -771,6 +890,7 @@ class AppDelegate(NSObject):
                 self.offset = 0
         consume(self, notify_new=True)
         build_menu(self)
+        refresh_banner_waits(self, datetime.now())
 
     def toggleMute_(self, _sender):
         self.config["muted"] = not self.config.get("muted", False)
