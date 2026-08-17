@@ -95,9 +95,11 @@ installs the `com.claudewatch.bar` LaunchAgent, and starts the menu bar app.
 Restart any running Claude Code sessions so they pick up the new hooks.
 
 `bar.py` needs PyObjC (`AppKit`/`Foundation`) to draw the menu bar icon and
-banners. Older macOS shipped this with the system Python, but on newer
-machines `/usr/bin/python3` resolves to the Command Line Tools' interpreter,
-which doesn't bundle it. `install.py` detects this and runs
+banners. The Homebrew formula **vendors PyObjC wheels** under `libexec/vendor`
+so `brew install` works offline with no runtime pip. For a manual clone, older
+macOS shipped PyObjC with the system Python, but on newer machines
+`/usr/bin/python3` resolves to the Command Line Tools' interpreter, which doesn't
+bundle it. `install.py` detects this and runs
 `/usr/bin/python3 -m pip install --user pyobjc-framework-Cocoa` automatically
 — still the same Apple-signed interpreter, just with one more site-package,
 so it stays Santa-safe. If that install fails (e.g. no network), hooks still

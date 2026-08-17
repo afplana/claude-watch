@@ -28,6 +28,13 @@ class EnsurePyobjcTests(unittest.TestCase):
         self.assertTrue(install.ensure_pyobjc())
         pip_install.assert_not_called()
 
+    @patch.object(install, "_vendor_dir", return_value="/opt/claude-watch/libexec/vendor")
+    @patch.object(install, "_pip_install_pyobjc")
+    @patch.object(install, "_pyobjc_available", return_value=True)
+    def test_skips_pip_when_bundled_vendor_available(self, _available, pip_install, _vendor):
+        self.assertTrue(install.ensure_pyobjc())
+        pip_install.assert_not_called()
+
     @patch.object(install, "_pip_install_pyobjc")
     @patch.object(install, "_pyobjc_available", return_value=False)
     def test_installs_when_missing(self, _available, pip_install):
@@ -41,6 +48,19 @@ class EnsurePyobjcTests(unittest.TestCase):
         pip_install.return_value.returncode = 1
         pip_install.return_value.stderr = "boom"
         self.assertFalse(install.ensure_pyobjc())
+
+
+class VendorDirTests(unittest.TestCase):
+    @patch.object(install, "STABLE_DIR", "/tmp/cw-stable")
+    def test_returns_vendor_when_appkit_present(self):
+        with patch("install.os.path.isfile") as isfile:
+            isfile.side_effect = lambda p: p.endswith("AppKit/__init__.py")
+            self.assertEqual(install._vendor_dir(), "/tmp/cw-stable/vendor")
+
+    @patch.object(install, "STABLE_DIR", "/tmp/cw-stable")
+    def test_returns_empty_when_no_vendor(self):
+        with patch("install.os.path.isfile", return_value=False):
+            self.assertEqual(install._vendor_dir(), "")
 
 
 if __name__ == "__main__":

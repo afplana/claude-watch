@@ -38,6 +38,14 @@ HOOK = os.path.join(STABLE_DIR, "hook.py")
 BAR = os.path.join(STABLE_DIR, "bar.py")
 HOOK_COMMAND = '%s "%s"' % (PYTHON, HOOK)
 
+
+def _vendor_dir():
+    """Homebrew installs vendored PyObjC wheels under libexec/vendor."""
+    vendor = os.path.join(STABLE_DIR, "vendor")
+    if os.path.isfile(os.path.join(vendor, "AppKit", "__init__.py")):
+        return vendor
+    return ""
+
 SETTINGS = os.path.expanduser("~/.claude/settings.json")
 LAUNCH_AGENTS = os.path.expanduser("~/Library/LaunchAgents")
 PLIST_LABEL = "com.claudewatch.bar"
@@ -116,9 +124,15 @@ def ensure_pyobjc():
     always there. Install it as a user site-package of that same
     interpreter rather than switching interpreters, so bar.py keeps running
     under the Apple-signed /usr/bin/python3 (see README's Santa notes).
+
+    When installed via Homebrew, PyObjC is vendored under libexec/vendor and
+    wired in through PYTHONPATH — no pip bootstrap needed.
     """
+    vendor = _vendor_dir()
+    if vendor and vendor not in sys.path:
+        sys.path.insert(0, vendor)
     if _pyobjc_available():
-        print("  PyObjC already available")
+        print("  PyObjC available%s" % (" (bundled vendor)" if vendor else ""))
         return True
     print("  PyObjC (AppKit) not found under %s; installing..." % PYTHON)
     result = _pip_install_pyobjc()
@@ -134,6 +148,15 @@ def ensure_pyobjc():
 def install_launch_agent():
     os.makedirs(LAUNCH_AGENTS, exist_ok=True)
     os.makedirs(DATA_DIR, exist_ok=True)
+    vendor = _vendor_dir()
+    env_block = ""
+    if vendor:
+        env_block = """
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PYTHONPATH</key>
+        <string>%s</string>
+    </dict>""" % vendor
     plist = """<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -147,10 +170,10 @@ def install_launch_agent():
     <key>RunAtLoad</key><true/>
     <key>KeepAlive</key><true/>
     <key>StandardOutPath</key><string>%s/bar.log</string>
-    <key>StandardErrorPath</key><string>%s/bar.log</string>
+    <key>StandardErrorPath</key><string>%s/bar.log</string>%s
 </dict>
 </plist>
-""" % (PLIST_LABEL, PYTHON, BAR, DATA_DIR, DATA_DIR)
+""" % (PLIST_LABEL, PYTHON, BAR, DATA_DIR, DATA_DIR, env_block)
     with open(PLIST_PATH, "w") as fh:
         fh.write(plist)
     subprocess.run(["launchctl", "unload", PLIST_PATH], capture_output=True)
