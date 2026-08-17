@@ -1,8 +1,8 @@
 class ClaudeWatch < Formula
   desc "Santa-safe menu bar live feed + alerts for Claude Code sessions"
   homepage "https://github.com/afplana/claude-watch"
-  url "https://github.com/afplana/claude-watch/archive/refs/tags/v0.1.0.tar.gz"
-  sha256 "b7d10d28c3776d51ea3b1b3df8c01dfdeaa06e4a687e64c310eac3010790c9e6"
+  url "https://github.com/afplana/claude-watch/archive/refs/tags/v0.2.0.tar.gz"
+  sha256 "d430c5910d25b09b0e47d08744dbb475ae9b83cf4c3a36654914fc33f14bc9ce"
   license "MIT"
 
   # No compiled binaries shipped by us: scripts run under Apple-signed
