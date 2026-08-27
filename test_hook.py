@@ -75,6 +75,16 @@ class NormalizeTests(unittest.TestCase):
         self.assertEqual(rec["term_session"], "")
         self.assertEqual(rec["tty"], "")
 
+    def test_captures_transcript_path_and_branch(self):
+        rec = hook.normalize(
+            {"hook_event_name": "Stop", "cwd": "/x/proj", "transcript_path": "/tmp/t.jsonl"},
+            branch="main", tmux_pane="%3", ghostty_surface="uuid-1",
+        )
+        self.assertEqual(rec["transcript_path"], "/tmp/t.jsonl")
+        self.assertEqual(rec["branch"], "main")
+        self.assertEqual(rec["tmux_pane"], "%3")
+        self.assertEqual(rec["ghostty_surface"], "uuid-1")
+
 
 if __name__ == "__main__":
     unittest.main()

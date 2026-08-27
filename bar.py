@@ -27,6 +27,12 @@ import warnings
 from collections import deque
 from datetime import datetime
 
+import analyzer
+import dedup
+import notify_policy
+import sessionname
+import webhook
+
 # Harmless PyObjC noise when bridging CGColor for the banner's layer.
 warnings.filterwarnings("ignore", message="PyObjCPointer created")
 
@@ -38,6 +44,8 @@ from AppKit import (
     NSButton,
     NSColor,
     NSFont,
+    NSFontAttributeName,
+    NSForegroundColorAttributeName,
     NSLineBreakByWordWrapping,
     NSMenu,
     NSMenuItem,
@@ -53,10 +61,10 @@ from AppKit import (
     NSWindowCollectionBehaviorCanJoinAllSpaces,
     NSWindowCollectionBehaviorStationary,
     NSWindowStyleMaskBorderless,
-    NSWindowStyleMaskNonactivatingPanel,
     NSWorkspace,
 )
-from Foundation import NSObject, NSTimer
+from Foundation import NSAttributedString, NSObject, NSTimer
+from PyObjCTools import AppHelper
 
 DATA_DIR = os.path.expanduser("~/.claude-watch")
 CONFIG_PATH = os.path.join(DATA_DIR, "config.json")
@@ -181,12 +189,18 @@ def snooze_seconds(minutes=5.0):
 
 
 def session_label(sess, width=48):
-    """Human label for a session: 'project — first prompt', project-only if none."""
+    """Human label: 'project [branch] — first prompt [cat]' when available."""
     project = sess.get("project", "(unknown)")
+    branch = (sess.get("branch") or "").strip()
     title = (sess.get("title") or "").strip()
-    if not title:
-        return project
-    label = "%s — %s" % (project, title)
+    nick = sessionname.session_nickname(sess.get("session_id", ""))
+    base = "%s [%s]" % (project, branch) if branch else project
+    if title:
+        label = "%s — %s" % (base, title)
+    else:
+        label = base
+    if nick:
+        label = "%s [%s]" % (label, nick)
     return label if len(label) <= width else label[: width - 1] + "…"
 
 
@@ -214,6 +228,163 @@ def toggle_project_mute(config, project):
     return config
 
 
+def default_config():
+    return {
+        "muted": False,
+        "muted_projects": [],
+        "notify_on_text_response": True,
+        "suppress_for_subagents": True,
+        "notify_only_when_unfocused": False,
+        "notify_delay_seconds": 0,
+        "volume": 1.0,
+        "terminal_bell": True,
+        "suppress_question_after_task_complete_seconds": 12,
+        "suppress_question_after_any_notification_seconds": 7,
+        "suppress_filters": [],
+        "sounds": {},
+        "webhook": {"enabled": False, "url": "", "preset": "slack", "chat_id": "", "headers": {}},
+    }
+
+
+def terminal_is_focused(term_program):
+    """Best-effort: True if the terminal app for this session is frontmost.
+
+    Uses NSWorkspace's frontmost-app property rather than System Events UI
+    scripting, so this needs no Accessibility permission -- at the cost of
+    being app-level only (can't tell which window/tab of that app is up).
+    Returns None when focus can't be determined (caller should still notify).
+    """
+    names = {n.lower() for n in terminal_app_names(term_program)}
+    if not names:
+        return None
+    front = NSWorkspace.sharedWorkspace().frontmostApplication()
+    if front is None:
+        return None
+    front_name = (front.localizedName() or "").lower()
+    return front_name in names
+
+
+def should_notify_desktop(config, sess):
+    if not config.get("notify_only_when_unfocused"):
+        return True
+    focused = terminal_is_focused(sess.get("term", ""))
+    if focused is None:
+        return True
+    return not focused
+
+
+def _alert_kind_for_status(notify_status):
+    if notify_status in (analyzer.TASK_COMPLETE, analyzer.REVIEW_COMPLETE):
+        return "done"
+    return "waiting"
+
+
+def play_notification_sound(config, sound_name, status=""):
+    """Play a named system sound or a per-status custom file path."""
+    volume = float(config.get("volume", 1.0))
+    volume = max(0.0, min(1.0, volume))
+    custom = (config.get("sounds") or {}).get(status) or (config.get("sounds") or {}).get(sound_name)
+    snd = None
+    if custom and os.path.isfile(custom):
+        snd = NSSound.alloc().initWithContentsOfFile_byReference_(custom, True)
+    if snd is None and sound_name:
+        snd = NSSound.soundNamed_(sound_name)
+    if snd:
+        snd.setVolume_(volume)
+        snd.play()
+
+
+def ring_terminal_bell(tty):
+    """Ring the session's terminal bell (best-effort)."""
+    if not tty:
+        return
+    try:
+        with open(tty, "wb") as fh:
+            fh.write(b"\a")
+    except OSError:
+        pass
+
+
+def send_tty_return(tty):
+    """Send Enter to a session TTY (best-effort; same path as the bell)."""
+    if not tty:
+        return
+    try:
+        with open(tty, "wb") as fh:
+            fh.write(b"\r")
+    except OSError:
+        pass
+
+
+def send_approval_keystroke(tty, tmux_pane=""):
+    """Approve a Claude permission prompt: Enter via tmux or the session TTY."""
+    if tmux_pane:
+        try:
+            subprocess.run(
+                ["tmux", "send-keys", "-t", tmux_pane, "Enter"],
+                capture_output=True, timeout=2,
+            )
+            return
+        except Exception:
+            pass
+    send_tty_return(tty)
+
+
+def _do_fire_banner(app, sess, sid, notify_status, title, body, sound, sticky, ev):
+    term = sess.get("term")
+    ts = sess.get("term_session", "")
+    tty = sess.get("tty", "")
+    cmd = pending_command_text(sess) if sticky else ""
+    label = session_label(sess)
+    show_banner(app, title, body, sound, term=term, term_session=ts, tty=tty,
+                command_text=cmd, sticky=sticky, approvable=analyzer.is_approvable(notify_status),
+                sid=sid, tmux_pane=sess.get("tmux_pane", ""),
+                zellij_session=sess.get("zellij_session", ""),
+                ghostty_surface=sess.get("ghostty_surface", ""))
+    app.alerts.append({"ts": ev.get("ts", ""), "label": label, "kind": _alert_kind_for_status(notify_status)})
+    play_notification_sound(app.config, sound, notify_status)
+    if app.config.get("terminal_bell", True):
+        ring_terminal_bell(tty)
+    _send_webhook_async(app.config, notify_status, title, body)
+    notify_state = sess.setdefault("notify_state", {})
+    notify_policy.record_notification(notify_state, notify_status, body)
+
+
+def _send_webhook_async(config, notify_status, title, body):
+    """Deliver the webhook off the main thread -- urlopen(timeout=10) would
+    otherwise block the AppKit run loop for up to 10s per notification."""
+    def deliver():
+        if not webhook.send_webhook(config, notify_status, title, body):
+            wh = (config or {}).get("webhook") or {}
+            if wh.get("enabled") and wh.get("url"):
+                print("claude-watch: webhook delivery failed for status=%s" % notify_status)
+    threading.Thread(target=deliver, daemon=True).start()
+
+
+def _fire_banner(app, sess, sid, notify_status, title, body, sound, sticky, ev):
+    """Gate, dedupe, optionally delay, then show a banner."""
+    dedup_key = "%s:%s:%s:%s" % (sid, ev.get("event"), notify_status, title)
+    if dedup.should_skip_duplicate(dedup_key):
+        return
+    if notify_policy.should_suppress(app.config, sess, notify_status, body, sess.get("notify_state", {})):
+        return
+
+    delay = float(app.config.get("notify_delay_seconds") or 0)
+    delay = max(0.0, min(delay, 25.0))
+
+    def deliver():
+        if not should_notify_desktop(app.config, sess):
+            return
+        _do_fire_banner(app, sess, sid, notify_status, title, body, sound, sticky, ev)
+
+    if delay <= 0:
+        deliver()
+    else:
+        # show_banner (via deliver) must run on the main thread; AppHelper.callLater
+        # schedules an NSTimer on the calling (main) run loop rather than a new thread.
+        AppHelper.callLater(delay, deliver)
+
+
 # ------------------------------------------------------------ terminal focus
 # TERM_PROGRAM (set by the terminal Claude Code runs inside, captured by hook.py)
 # → the localizedName(s) of the matching macOS app, so a click can raise it.
@@ -221,6 +392,8 @@ TERM_APP_MAP = {
     "Apple_Terminal": ["Terminal"],
     "iTerm.app": ["iTerm2", "iTerm"],
     "vscode": ["Code", "Visual Studio Code", "Code - Insiders"],
+    "cursor": ["Cursor"],
+    "Cursor": ["Cursor"],
     "ghostty": ["Ghostty"],
     "WezTerm": ["WezTerm"],
     "Hyper": ["Hyper"],
@@ -290,9 +463,26 @@ def terminal_focus_script(tty):
     )
 
 
-def focus_plan(term, term_session, tty):
-    """Pure: decide how to focus a session's tab. Returns (kind, script|None)."""
+def ghostty_focus_script(surface_id):
+    return (
+        'tell application "Ghostty"\n'
+        '  set t to terminal id "%s"\n'
+        '  focus t\n'
+        '  activate\n'
+        '  return "FOUND"\n'
+        'end tell\n' % surface_id
+    )
+
+
+def focus_plan(term, term_session, tty, tmux_pane="", zellij_session="", ghostty_surface=""):
+    """Pure: decide how to focus a session's tab. Returns (kind, payload|None)."""
+    if tmux_pane:
+        return ("tmux", tmux_pane)
+    if zellij_session:
+        return ("zellij", zellij_session)
     names = {n.lower() for n in terminal_app_names(term)}
+    if "ghostty" in names and ghostty_surface:
+        return ("ghostty", ghostty_focus_script(ghostty_surface))
     if ({"iterm2", "iterm"} & names) and iterm_session_uuid(term_session):
         return ("iterm", iterm_focus_script(iterm_session_uuid(term_session)))
     if ("terminal" in names) and tty:
@@ -310,10 +500,27 @@ def _osascript(script):
         return ""
 
 
-def focus_tab(term, term_session, tty):
-    """Raise the exact tab; fall back to the app-level raise if unresolved."""
-    kind, script = focus_plan(term, term_session, tty)
-    if kind in ("iterm", "terminal") and _osascript(script) == "FOUND":
+def focus_tab(term, term_session, tty, tmux_pane="", zellij_session="", ghostty_surface=""):
+    """Raise the exact tab/pane; fall back to app-level raise if unresolved."""
+    kind, payload = focus_plan(term, term_session, tty, tmux_pane, zellij_session, ghostty_surface)
+    if kind == "tmux":
+        try:
+            subprocess.run(["tmux", "select-pane", "-t", payload], capture_output=True, timeout=2)
+            return focus_terminal(term)
+        except Exception:
+            return focus_terminal(term)
+    if kind == "zellij":
+        try:
+            subprocess.run(
+                ["zellij", "action", "focus-session", "--session", payload],
+                capture_output=True, timeout=2,
+            )
+            return focus_terminal(term)
+        except Exception:
+            return focus_terminal(term)
+    if kind == "ghostty" and _osascript(payload) == "FOUND":
+        return True
+    if kind in ("iterm", "terminal") and _osascript(payload) == "FOUND":
         return True
     return focus_terminal(term)
 
@@ -368,6 +575,27 @@ def banner_wait_body(base, age):
     return base
 
 
+class BannerPanel(NSPanel):
+    """Banner window that can become key so its buttons receive clicks.
+
+    Menu bar apps run as NSApplicationActivationPolicyAccessory; combined with
+    a non-activating panel, NSButtons never get mouse-down events. This panel
+    accepts key status on click; BannerView.acceptsFirstMouse_ handles the
+    first click while another app is frontmost.
+    """
+
+    def canBecomeKeyWindow(self):
+        return True
+
+    def canBecomeMainWindow(self):
+        return False
+
+
+class BannerView(NSView):
+    def acceptsFirstMouse_(self, _event):
+        return True
+
+
 class BannerController(NSObject):
     """Owns one floating banner window + its auto-dismiss timer.
 
@@ -385,10 +613,32 @@ class BannerController(NSObject):
         if self in self.app.banners:
             self.app.banners.remove(self)
 
+    def _activate_and_focus(self):
+        NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+        if not getattr(self, "term", None):
+            return
+        focus_tab(
+            self.term,
+            getattr(self, "term_session", ""),
+            getattr(self, "tty", ""),
+            getattr(self, "tmux_pane", ""),
+            getattr(self, "zellij_session", ""),
+            getattr(self, "ghostty_surface", ""),
+        )
+
     def focusAndDismiss_(self, sender):
         """Click handler: jump to the session's terminal, then close the banner."""
-        if getattr(self, "term", None):
-            focus_tab(self.term, getattr(self, "term_session", ""), getattr(self, "tty", ""))
+        self._activate_and_focus()
+        self.dismiss_(sender)
+
+    def approveAndDismiss_(self, sender):
+        """Focus the session and send Enter to accept the permission prompt."""
+        self._activate_and_focus()
+        tty = getattr(self, "tty", "")
+        tmux_pane = getattr(self, "tmux_pane", "")
+        if tty or tmux_pane:
+            NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                0.35, _make_approve_keystroke(tty, tmux_pane), "fire:", None, False)
         self.dismiss_(sender)
 
     def copyCommand_(self, _sender):
@@ -409,6 +659,18 @@ class BannerController(NSObject):
             snooze_seconds(5), _make_snooze_reshow(app, payload), "fire:", None, False)
 
 
+class _ApproveKeystroke(NSObject):
+    def fire_(self, _timer):
+        send_approval_keystroke(self.tty, self.tmux_pane)
+
+
+def _make_approve_keystroke(tty, tmux_pane=""):
+    obj = _ApproveKeystroke.alloc().init()
+    obj.tty = tty
+    obj.tmux_pane = tmux_pane
+    return obj
+
+
 class _SnoozeReshow(NSObject):
     """One-shot timer target that re-shows a snoozed banner's exact content.
 
@@ -427,7 +689,10 @@ class _SnoozeReshow(NSObject):
         show_banner(self.app, p["title"], p["body"], p.get("sound"),
                     term=p.get("term"), term_session=p.get("term_session", ""),
                     tty=p.get("tty", ""), command_text=p.get("command_text", ""),
-                    sticky=p.get("sticky", False), sid=p.get("sid"))
+                    sticky=p.get("sticky", False), approvable=p.get("approvable", False),
+                    sid=p.get("sid"),
+                    tmux_pane=p.get("tmux_pane", ""), zellij_session=p.get("zellij_session", ""),
+                    ghostty_surface=p.get("ghostty_surface", ""))
 
 
 def _make_snooze_reshow(app, payload):
@@ -449,14 +714,43 @@ def _banner_label(frame, text, size, bold, white):
     return tf
 
 
-def _banner_button(frame, title, target, action):
+def _banner_button_title(title, text_white, size=11):
+    attrs = {
+        NSForegroundColorAttributeName: NSColor.colorWithCalibratedWhite_alpha_(text_white, 1.0),
+        NSFontAttributeName: NSFont.systemFontOfSize_(size),
+    }
+    return NSAttributedString.alloc().initWithString_attributes_(title, attrs)
+
+
+def _banner_button(frame, title, target, action, primary=False):
     b = NSButton.alloc().initWithFrame_(frame)
-    b.setTitle_(title)
-    b.setBezelStyle_(1)  # rounded
-    b.setFont_(NSFont.systemFontOfSize_(11))
+    b.setBordered_(False)
+    b.setBezelStyle_(0)
+    b.setEnabled_(True)
     b.setTarget_(target)
     b.setAction_(action)
+    b.setWantsLayer_(True)
+    layer = b.layer()
+    layer.setCornerRadius_(6.0)
+    if primary:
+        layer.setBackgroundColor_(
+            NSColor.colorWithCalibratedRed_green_blue_alpha_(0.22, 0.48, 0.98, 1.0).CGColor())
+        b.setAttributedTitle_(_banner_button_title(title, 1.0))
+    else:
+        layer.setBackgroundColor_(NSColor.colorWithCalibratedWhite_alpha_(0.90, 1.0).CGColor())
+        b.setAttributedTitle_(_banner_button_title(title, 0.10))
     return b
+
+
+def _banner_button_bar(width, height):
+    """Slightly lighter footer strip so action buttons stand out from the panel."""
+    bar = NSView.alloc().initWithFrame_(((0, 0), (width, height)))
+    bar.setWantsLayer_(True)
+    layer = bar.layer()
+    layer.setBackgroundColor_(NSColor.colorWithCalibratedWhite_alpha_(0.22, 1.0).CGColor())
+    layer.setBorderWidth_(0.5)
+    layer.setBorderColor_(NSColor.colorWithCalibratedWhite_alpha_(0.32, 1.0).CGColor())
+    return bar
 
 
 def _enforce_banner_cap(app, cap=MAX_BANNERS):
@@ -467,7 +761,8 @@ def _enforce_banner_cap(app, cap=MAX_BANNERS):
 
 
 def show_banner(app, title, body, sound=None, term=None, term_session="", tty="",
-                 command_text="", sticky=False, sid=None):
+                 command_text="", sticky=False, approvable=False, sid=None,
+                 tmux_pane="", zellij_session="", ghostty_surface=""):
     """Draw our own notification banner (top-right), since macOS system
     notifications don't render on this machine. Must run on the main thread.
 
@@ -476,9 +771,13 @@ def show_banner(app, title, body, sound=None, term=None, term_session="", tty=""
     non-empty), Snooze (re-show this same banner after a delay), Dismiss.
     App-side only — these control the app/terminal/clipboard, never Claude.
 
-    `sticky` banners (permission prompts) get no auto-dismiss timer since
-    Claude is blocked waiting on them; `sid` tags which session they belong
-    to so they can be found and auto-closed later."""
+    `sticky` banners (permission prompts, session-limit/API-error) get no
+    auto-dismiss timer since Claude is blocked or the session needs manual
+    attention; `sid` tags which session they belong to so they can be found
+    and auto-closed later. `approvable` is narrower than `sticky`: only
+    questions/plans actually resolve on Enter, so only those get the Approve
+    button -- session-limit/API-error banners are sticky but have nothing to
+    approve, and Approve there would inject a stray keystroke into the TTY."""
     if not hasattr(app, "banners"):
         app.banners = []
     _enforce_banner_cap(app)
@@ -488,19 +787,21 @@ def show_banner(app, title, body, sound=None, term=None, term_session="", tty=""
     x = vf.origin.x + vf.size.width - BANNER_W - BANNER_MARGIN
     y = vf.origin.y + vf.size.height - BANNER_H - BANNER_MARGIN - index * (BANNER_H + BANNER_GAP)
 
-    style = NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel
-    panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+    style = NSWindowStyleMaskBorderless
+    panel = BannerPanel.alloc().initWithContentRect_styleMask_backing_defer_(
         ((x, y), (BANNER_W, BANNER_H)), style, NSBackingStoreBuffered, False)
+    panel.setFloatingPanel_(True)
     panel.setLevel_(NSStatusWindowLevel)
     panel.setOpaque_(False)
     panel.setBackgroundColor_(NSColor.clearColor())
     panel.setHasShadow_(True)
     panel.setReleasedWhenClosed_(False)
-    panel.setBecomesKeyOnlyIfNeeded_(True)
+    panel.setHidesOnDeactivate_(False)
+    panel.setWorksWhenModal_(True)
     panel.setCollectionBehavior_(
         NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorStationary)
 
-    content = NSView.alloc().initWithFrame_(((0, 0), (BANNER_W, BANNER_H)))
+    content = BannerView.alloc().initWithFrame_(((0, 0), (BANNER_W, BANNER_H)))
     content.setWantsLayer_(True)
     content.layer().setCornerRadius_(14.0)
     content.layer().setBackgroundColor_(
@@ -522,8 +823,12 @@ def show_banner(app, title, body, sound=None, term=None, term_session="", tty=""
     controller.term = term
     controller.term_session = term_session
     controller.tty = tty
+    controller.tmux_pane = tmux_pane
+    controller.zellij_session = zellij_session
+    controller.ghostty_surface = ghostty_surface
     controller.command_text = command_text
     controller.sticky = sticky
+    controller.approvable = approvable
     controller.sid = sid
     controller.body_tf = body_tf
     controller.base_body = body
@@ -534,40 +839,47 @@ def show_banner(app, title, body, sound=None, term=None, term_session="", tty=""
         "term": term,
         "term_session": term_session,
         "tty": tty,
+        "tmux_pane": tmux_pane,
+        "zellij_session": zellij_session,
+        "ghostty_surface": ghostty_surface,
         "command_text": command_text,
         "sticky": sticky,
+        "approvable": approvable,
         "sid": sid,
     }
 
-    # Button row along the bottom: Focus tab, Copy command (only when there's
-    # a pending command to copy), Snooze, Dismiss.
-    row = [("Focus tab", "focusAndDismiss:")]
+    # Button row along the bottom. Only questions/plans get Approve (focus + Enter)
+    # -- session-limit/API-error banners are sticky but have nothing to approve.
+    if approvable:
+        row = [("Approve", "approveAndDismiss:"), ("Focus tab", "focusAndDismiss:")]
+    else:
+        row = [("Focus tab", "focusAndDismiss:")]
     if command_text:
         row.append(("Copy command", "copyCommand:"))
-    row.append(("Snooze", "snooze:"))
+    if not sticky:
+        row.append(("Snooze", "snooze:"))
     row.append(("Dismiss", "dismiss:"))
 
     row_y = 10
-    row_h = 24
+    row_h = 26
     row_gap = 6
-    row_x0 = 18
+    row_x0 = 14
     row_w = BANNER_W - 2 * row_x0
     btn_w = (row_w - row_gap * (len(row) - 1)) / float(len(row))
+    content.addSubview_(_banner_button_bar(BANNER_W, row_y + row_h + 10))
     for i, (label, action) in enumerate(row):
         bx = row_x0 + i * (btn_w + row_gap)
-        button = _banner_button(((bx, row_y), (btn_w, row_h)), label, controller, action)
+        button = _banner_button(
+            ((bx, row_y), (btn_w, row_h)), label, controller, action,
+            primary=(action == "approveAndDismiss:"),
+        )
         content.addSubview_(button)
 
-    panel.orderFrontRegardless()
+    panel.makeKeyAndOrderFront_(None)
     if not sticky:
         controller.timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             BANNER_SECONDS, controller, "dismiss:", None, False)
     app.banners.append(controller)
-
-    if sound:
-        snd = NSSound.soundNamed_(sound)
-        if snd:
-            snd.play()
 
 
 def dismiss_permission_banners(app, sid):
@@ -591,11 +903,17 @@ def refresh_banner_waits(app, now):
 
 
 def load_config():
+    cfg = default_config()
     try:
         with open(CONFIG_PATH) as fh:
-            return json.load(fh)
+            stored = json.load(fh)
+        if isinstance(stored, dict):
+            cfg.update(stored)
+            if isinstance(stored.get("webhook"), dict):
+                cfg["webhook"] = {**default_config()["webhook"], **stored["webhook"]}
     except Exception:
-        return {"muted": False}
+        pass
+    return cfg
 
 
 def save_config(cfg):
@@ -618,6 +936,7 @@ def apply_event(app, ev, notify_new):
     sess = app.sessions.get(sid)
     if sess is None:
         sess = {
+            "session_id": sid,
             "project": ev.get("project", "(unknown)"),
             "status": ACTIVE,
             "events": deque(maxlen=MAX_EVENTS_PER_SESSION),
@@ -628,6 +947,12 @@ def apply_event(app, ev, notify_new):
             "tty": ev.get("tty", ""),
             "cwd": ev.get("cwd", ""),
             "title": "",
+            "branch": ev.get("branch", ""),
+            "transcript_path": ev.get("transcript_path", ""),
+            "tmux_pane": ev.get("tmux_pane", ""),
+            "zellij_session": ev.get("zellij_session", ""),
+            "ghostty_surface": ev.get("ghostty_surface", ""),
+            "notify_state": {},
         }
         app.sessions[sid] = sess
     if ev.get("project"):
@@ -640,6 +965,16 @@ def apply_event(app, ev, notify_new):
         sess["tty"] = ev["tty"]
     if ev.get("cwd"):
         sess["cwd"] = ev["cwd"]
+    if ev.get("branch"):
+        sess["branch"] = ev["branch"]
+    if ev.get("transcript_path"):
+        sess["transcript_path"] = ev["transcript_path"]
+    if ev.get("tmux_pane"):
+        sess["tmux_pane"] = ev["tmux_pane"]
+    if ev.get("zellij_session"):
+        sess["zellij_session"] = ev["zellij_session"]
+    if ev.get("ghostty_surface"):
+        sess["ghostty_surface"] = ev["ghostty_surface"]
 
     # Track the tool call awaiting a result — i.e. what a permission prompt is for.
     if event == "PreToolUse":
@@ -647,7 +982,10 @@ def apply_event(app, ev, notify_new):
     elif event == "PostToolUse":
         sess["pending"] = None
 
-    sess["status"] = event_status(event)
+    if event == "PreToolUse" and ev.get("tool") in ("ExitPlanMode", "AskUserQuestion"):
+        sess["status"] = WAITING
+    else:
+        sess["status"] = event_status(event)
     if sess["status"] != WAITING:
         dismiss_permission_banners(app, sid)
     sess["last_ts"] = ev.get("ts", sess["last_ts"])
@@ -656,26 +994,39 @@ def apply_event(app, ev, notify_new):
     if event not in ("SessionStart", "SessionEnd"):
         sess["events"].append(ev)
 
-    if notify_new and not is_muted(app.config, sess["project"]):
+    if notify_new and not is_muted(app.config, sess["project"]) and should_notify_desktop(app.config, sess):
         if not hasattr(app, "alerts"):
             app.alerts = []
-        project = sess["project"]
-        term = sess.get("term")
-        ts = sess.get("term_session", "")
-        tty = sess.get("tty", "")
         label = session_label(sess)
-        if event == "Stop":
-            show_banner(app, "✅ %s" % label, "Claude finished — your turn.",
-                        "Glass", term=term, term_session=ts, tty=tty)
-            app.alerts.append({"ts": ev.get("ts", ""), "label": label,
-                               "kind": "done"})
+
+        if event == "PreToolUse":
+            pre_status = analyzer.status_for_pretooluse(ev.get("tool", ""))
+            if pre_status != analyzer.UNKNOWN:
+                title, body, sound, sticky = analyzer.banner_for_status(
+                    pre_status, label, pending=sess.get("pending"))
+                _fire_banner(app, sess, sid, pre_status, title, body, sound, sticky, ev)
+
+        elif event in ("Stop", "SubagentStop"):
+            if event == "SubagentStop" and app.config.get("suppress_for_subagents", True):
+                pass
+            else:
+                transcript = ev.get("transcript_path") or sess.get("transcript_path", "")
+                notify_status = analyzer.analyze_transcript(
+                    transcript, app.config.get("notify_on_text_response", True))
+                if notify_status == analyzer.UNKNOWN:
+                    notify_status = analyzer.TASK_COMPLETE
+                title, body, sound, sticky = analyzer.banner_for_status(notify_status, label)
+                _fire_banner(app, sess, sid, notify_status, title, body, sound, sticky, ev)
+
         elif event == "Notification":
-            title, text, sound = notification_alert(project, ev.get("detail", ""), sess.get("pending"))
-            cmd = pending_command_text(sess)
-            show_banner(app, title, text, sound, term=term, term_session=ts, tty=tty,
-                        command_text=cmd, sticky=True, sid=sid)
-            app.alerts.append({"ts": ev.get("ts", ""), "label": label,
-                               "kind": "waiting"})
+            if "permission" in (ev.get("detail") or "").lower():
+                title, body, sound = notification_alert(label, ev.get("detail", ""), sess.get("pending"))
+                sticky = True
+                notify_status = analyzer.QUESTION
+            else:
+                title, body, sound, sticky = analyzer.banner_for_status(analyzer.QUESTION, label, ev.get("detail", ""))
+                notify_status = analyzer.QUESTION
+            _fire_banner(app, sess, sid, notify_status, title, body, sound, sticky, ev)
 
 
 def consume(app, notify_new):
@@ -735,6 +1086,9 @@ def project_submenu(app, sess):
             "term": term,
             "term_session": sess.get("term_session", ""),
             "tty": sess.get("tty", ""),
+            "tmux_pane": sess.get("tmux_pane", ""),
+            "zellij_session": sess.get("zellij_session", ""),
+            "ghostty_surface": sess.get("ghostty_surface", ""),
         })
     else:
         add_item(sub, app, "Focus terminal (unknown)")
@@ -781,6 +1135,9 @@ def build_menu(app):
                 "term": sess.get("term", ""),
                 "term_session": sess.get("term_session", ""),
                 "tty": sess.get("tty", ""),
+                "tmux_pane": sess.get("tmux_pane", ""),
+                "zellij_session": sess.get("zellij_session", ""),
+                "ghostty_surface": sess.get("ghostty_surface", ""),
             })
         menu.addItem_(NSMenuItem.separatorItem())
 
@@ -879,7 +1236,7 @@ class AppDelegate(NSObject):
                         "Bash: rm -rf build/ && mvn clean install", "Ping",
                         term=os.environ.get("TERM_PROGRAM", ""),
                         command_text="rm -rf build/ && mvn clean install",
-                        sticky=True, sid="banner-test")
+                        sticky=True, approvable=True, sid="banner-test")
 
     def tick_(self, _timer):
         if not self.demo:
@@ -904,7 +1261,10 @@ class AppDelegate(NSObject):
 
     def focusProject_(self, sender):
         obj = sender.representedObject()
-        focus_tab(obj.get("term", ""), obj.get("term_session", ""), obj.get("tty", ""))
+        focus_tab(
+            obj.get("term", ""), obj.get("term_session", ""), obj.get("tty", ""),
+            obj.get("tmux_pane", ""), obj.get("zellij_session", ""), obj.get("ghostty_surface", ""),
+        )
 
     def quit_(self, _sender):
         NSApplication.sharedApplication().terminate_(self)

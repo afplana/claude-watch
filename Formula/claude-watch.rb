@@ -22,7 +22,9 @@ class ClaudeWatch < Formula
   end
 
   def install
-    libexec.install "hook.py", "bar.py", "cw.py", "cli.py", "install.py", "uninstall.py"
+    libexec.install "hook.py", "bar.py", "cw.py", "cli.py", "install.py", "uninstall.py",
+                    "analyzer.py", "jsonl_util.py", "webhook.py", "sessionname.py",
+                    "dedup.py", "notify_policy.py"
     vendor = libexec/"vendor"
     vendor.mkpath
     resources.each do |r|
