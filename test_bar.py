@@ -478,5 +478,15 @@ class BannerWaitBodyTests(unittest.TestCase):
         self.assertEqual(bar.banner_wait_body("Bash: ls", ""), "Bash: ls")
 
 
+class BannerButtonFirstClickTests(unittest.TestCase):
+    def test_banner_buttons_accept_first_mouse(self):
+        button = bar._banner_button(((0, 0), (60, 26)), "Dismiss", None, "dismiss:")
+        self.assertTrue(button.acceptsFirstMouse_(None))
+
+    def test_banner_view_accepts_first_mouse(self):
+        view = bar.BannerView.alloc().initWithFrame_(((0, 0), (10, 10)))
+        self.assertTrue(view.acceptsFirstMouse_(None))
+
+
 if __name__ == "__main__":
     unittest.main()

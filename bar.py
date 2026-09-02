@@ -596,6 +596,20 @@ class BannerView(NSView):
         return True
 
 
+class _FirstMouseButton(NSButton):
+    """Banner action button that reacts to the very first click.
+
+    AppKit sends acceptsFirstMouse: to whichever view is directly under the
+    cursor at hit-test time -- for a click on a button, that's this button,
+    not its parent BannerView. BannerView's override alone never covers
+    clicks that land on the buttons themselves, so each control needs its
+    own override too.
+    """
+
+    def acceptsFirstMouse_(self, _event):
+        return True
+
+
 class BannerController(NSObject):
     """Owns one floating banner window + its auto-dismiss timer.
 
@@ -723,7 +737,7 @@ def _banner_button_title(title, text_white, size=11):
 
 
 def _banner_button(frame, title, target, action, primary=False):
-    b = NSButton.alloc().initWithFrame_(frame)
+    b = _FirstMouseButton.alloc().initWithFrame_(frame)
     b.setBordered_(False)
     b.setBezelStyle_(0)
     b.setEnabled_(True)
