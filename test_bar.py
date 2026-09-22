@@ -6,8 +6,11 @@ Imports AppKit (preinstalled in /usr/bin/python3) but never starts the app.
 Run:  /usr/bin/python3 test_bar.py
 """
 
+import tempfile
+import threading
 import unittest
 from datetime import datetime, timedelta
+from unittest.mock import Mock, patch
 
 import bar
 
@@ -185,6 +188,52 @@ class TerminalTargetTests(unittest.TestCase):
         self.assertEqual(bar.terminal_app_names(""), [])
 
 
+class TerminalIsFocusedTests(unittest.TestCase):
+    def _mock_front_app(self, name):
+        front = Mock()
+        front.localizedName.return_value = name
+        return front
+
+    def test_unknown_term_program_returns_none_without_querying_workspace(self):
+        with patch("bar.NSWorkspace") as workspace:
+            self.assertIsNone(bar.terminal_is_focused(""))
+            workspace.sharedWorkspace.assert_not_called()
+
+    def test_matching_frontmost_app_is_focused(self):
+        with patch("bar.NSWorkspace") as workspace:
+            workspace.sharedWorkspace.return_value.frontmostApplication.return_value = (
+                self._mock_front_app("iTerm2")
+            )
+            self.assertTrue(bar.terminal_is_focused("iTerm.app"))
+
+    def test_different_frontmost_app_is_not_focused(self):
+        with patch("bar.NSWorkspace") as workspace:
+            workspace.sharedWorkspace.return_value.frontmostApplication.return_value = (
+                self._mock_front_app("Safari")
+            )
+            self.assertFalse(bar.terminal_is_focused("iTerm.app"))
+
+    def test_no_frontmost_app_returns_none(self):
+        with patch("bar.NSWorkspace") as workspace:
+            workspace.sharedWorkspace.return_value.frontmostApplication.return_value = None
+            self.assertIsNone(bar.terminal_is_focused("iTerm.app"))
+
+
+class ShouldNotifyDesktopTests(unittest.TestCase):
+    def test_disabled_setting_always_notifies(self):
+        self.assertTrue(bar.should_notify_desktop({"notify_only_when_unfocused": False}, {}))
+
+    def test_undeterminable_focus_still_notifies(self):
+        with patch("bar.terminal_is_focused", return_value=None):
+            config = {"notify_only_when_unfocused": True}
+            self.assertTrue(bar.should_notify_desktop(config, {"term": "iTerm.app"}))
+
+    def test_focused_terminal_suppresses_notification(self):
+        with patch("bar.terminal_is_focused", return_value=True):
+            config = {"notify_only_when_unfocused": True}
+            self.assertFalse(bar.should_notify_desktop(config, {"term": "iTerm.app"}))
+
+
 class FocusPlanTests(unittest.TestCase):
     def test_iterm_uuid_extracted_from_session_id(self):
         self.assertEqual(bar.iterm_session_uuid("w0t1p0:ABC-123"), "ABC-123")
@@ -205,6 +254,16 @@ class FocusPlanTests(unittest.TestCase):
         self.assertEqual(bar.focus_plan("Apple_Terminal", "", ""), ("app", None))
         self.assertEqual(bar.focus_plan("iTerm.app", "", ""), ("app", None))
 
+    def test_plan_prefers_tmux_pane(self):
+        kind, payload = bar.focus_plan("iTerm.app", "x", "/dev/ttys1", tmux_pane="%5")
+        self.assertEqual(kind, "tmux")
+        self.assertEqual(payload, "%5")
+
+    def test_plan_prefers_ghostty_surface(self):
+        kind, payload = bar.focus_plan("ghostty", "", "", ghostty_surface="abc-uuid")
+        self.assertEqual(kind, "ghostty")
+        self.assertIn("abc-uuid", payload)
+
     def test_plan_falls_back_to_app_for_unknown_terminal(self):
         self.assertEqual(bar.focus_plan("SomeFutureTerm", "x:y", "/dev/ttys1"),
                          ("app", None))
@@ -214,6 +273,10 @@ class SessionLabelTests(unittest.TestCase):
     def test_label_combines_project_and_title(self):
         s = {"project": "web-app", "title": "fix the rounding bug"}
         self.assertEqual(bar.session_label(s), "web-app — fix the rounding bug")
+
+    def test_includes_branch_when_present(self):
+        s = {"project": "web-app", "branch": "main", "title": "fix bug"}
+        self.assertEqual(bar.session_label(s), "web-app [main] — fix bug")
 
     def test_label_falls_back_to_project_without_title(self):
         self.assertEqual(bar.session_label({"project": "web-app"}), "web-app")
@@ -242,6 +305,71 @@ class BannerActionTests(unittest.TestCase):
     def test_snooze_seconds(self):
         self.assertEqual(bar.snooze_seconds(5), 300.0)
         self.assertEqual(bar.snooze_seconds(), 300.0)
+
+    def test_send_tty_return_writes_cr(self):
+        with tempfile.NamedTemporaryFile() as tmp:
+            bar.send_tty_return(tmp.name)
+            tmp.seek(0)
+            self.assertEqual(tmp.read(), b"\r")
+
+    @patch("bar.subprocess.run")
+    def test_send_approval_keystroke_prefers_tmux(self, run):
+        bar.send_approval_keystroke("/dev/ttys001", tmux_pane="%7")
+        run.assert_called_once()
+        self.assertIn("tmux", run.call_args[0][0])
+
+
+class FireBannerSchedulingTests(unittest.TestCase):
+    """show_banner must run on the main thread (its own docstring says so);
+    a delayed banner has to be scheduled back onto it, not a worker thread."""
+
+    def _app(self):
+        app = Mock()
+        app.config = {"notify_delay_seconds": 5}
+        return app
+
+    @patch("bar.dedup.should_skip_duplicate", return_value=False)
+    @patch("bar.notify_policy.should_suppress", return_value=False)
+    @patch("bar.threading.Timer")
+    @patch("bar.AppHelper.callLater")
+    def test_delayed_banner_uses_main_thread_timer_not_worker_thread(
+        self, call_later, timer, _suppress, _dup
+    ):
+        bar._fire_banner(self._app(), {}, "sid", bar.analyzer.QUESTION,
+                          "t", "b", "Ping", True, {"event": "Notification"})
+        call_later.assert_called_once()
+        self.assertEqual(call_later.call_args[0][0], 5)
+        timer.assert_not_called()
+
+
+class SendWebhookAsyncTests(unittest.TestCase):
+    @patch("bar.threading.Thread")
+    def test_delivers_off_the_main_thread(self, thread_cls):
+        bar._send_webhook_async({"webhook": {"enabled": True, "url": "https://x"}},
+                                 bar.analyzer.TASK_COMPLETE, "t", "b")
+        thread_cls.assert_called_once()
+        self.assertTrue(thread_cls.call_args.kwargs.get("daemon"))
+        thread_cls.return_value.start.assert_called_once()
+
+    @patch("bar.webhook.send_webhook", return_value=False)
+    def test_failed_delivery_is_reported_not_silent(self, _send):
+        with patch("builtins.print") as mock_print:
+            bar._send_webhook_async({"webhook": {"enabled": True, "url": "https://x"}},
+                                     bar.analyzer.TASK_COMPLETE, "t", "b")
+            for thread in threading.enumerate():
+                if thread is not threading.main_thread():
+                    thread.join(timeout=1)
+            mock_print.assert_called_once()
+
+    @patch("bar.webhook.send_webhook", return_value=False)
+    def test_disabled_webhook_failure_is_not_reported(self, _send):
+        with patch("builtins.print") as mock_print:
+            bar._send_webhook_async({"webhook": {"enabled": False}},
+                                     bar.analyzer.TASK_COMPLETE, "t", "b")
+            for thread in threading.enumerate():
+                if thread is not threading.main_thread():
+                    thread.join(timeout=1)
+            mock_print.assert_not_called()
 
 
 class RecentAlertsTests(unittest.TestCase):
@@ -348,6 +476,16 @@ class BannerWaitBodyTests(unittest.TestCase):
     def test_omits_when_just_now_or_empty(self):
         self.assertEqual(bar.banner_wait_body("Bash: ls", "just now"), "Bash: ls")
         self.assertEqual(bar.banner_wait_body("Bash: ls", ""), "Bash: ls")
+
+
+class BannerButtonFirstClickTests(unittest.TestCase):
+    def test_banner_buttons_accept_first_mouse(self):
+        button = bar._banner_button(((0, 0), (60, 26)), "Dismiss", None, "dismiss:")
+        self.assertTrue(button.acceptsFirstMouse_(None))
+
+    def test_banner_view_accepts_first_mouse(self):
+        view = bar.BannerView.alloc().initWithFrame_(((0, 0), (10, 10)))
+        self.assertTrue(view.acceptsFirstMouse_(None))
 
 
 if __name__ == "__main__":

@@ -17,7 +17,7 @@ alerts** for your Claude Code sessions.
   blocked, so they don't time out) and show how long you've been waited on.
   They include the actual pending command — e.g. `🟡 api-service — approve?` /
   `Bash: rm -rf build/` — correlated from the `PreToolUse` that triggered the
-  prompt, since Claude's own message is generic ("Claude needs your permission").
+  prompt. Buttons: **Approve** (focus tab + Enter), **Focus tab**, **Copy command**, **Dismiss**.
   At most three banners show at once.
 - **Click an alert to jump to its terminal tab.** The hook records the
   session's `TERM_PROGRAM` plus its tab identifiers (`ITERM_SESSION_ID` /
@@ -26,11 +26,23 @@ alerts** for your Claude Code sessions.
   the session runs in — handy when juggling several Claude instances. Falls
   back to raising the terminal app when the specific tab can't be resolved
   (other terminals, or identifiers unavailable).
+- **Six smart notification types** (like claude-notifications-go): task complete ✅,
+  review complete 🔍, question ❓, plan ready 📋, session limit ⏱️, API error 🔴 —
+  detected via transcript analysis on Stop and immediate alerts on plan/question tools.
+- **Git branch in session labels** — `project [branch] — first prompt` in banners and menu.
+- **Optional webhooks** — Slack, Discord, Telegram, ntfy, Teams, or custom via `config.json` (off by default).
+- **Focus-aware notifications** — `"notify_only_when_unfocused": true` skips banners when you're already in the terminal.
+- **Notification delay** — `"notify_delay_seconds": N` waits before showing (re-checks focus if unfocused-only).
+- **Volume + custom sounds** — `"volume": 0.8`, per-status paths in `"sounds": {"task_complete": "/path/to.mp3"}`.
+- **Terminal bell** — rings `\a` on the session TTY when a banner fires (`"terminal_bell": true`).
+- **Session nicknames** — deterministic friendly names like `[cat]` from the session UUID.
+- **tmux / zellij / Ghostty focus** — click-to-focus targets the correct pane/tab when identifiers are captured.
+- **Dedup + suppress filters** — handles duplicate hook fires and per-folder/status mute rules.
 - **Per-project mute.** Each session's submenu has "Mute this project" to silence
   just the noisy repo while keeping alerts for the one you care about; a global
   mute is still there too. Muted projects show a 🔇 in the dropdown.
-- 100% local. No network, no analytics, no phone-home. Everything lives in
-  `~/.claude-watch/`.
+- 100% local by default. No analytics, no phone-home. Optional webhooks are
+  off unless you enable them. Everything lives in `~/.claude-watch/`.
 
 > **Why a custom banner instead of a real notification?** macOS system
 > notifications (`osascript display notification`) proved unreliable on recent
@@ -144,6 +156,8 @@ Note: hooks capture *events*, not tokens/cost, so analytics cover activity
 /usr/bin/python3 test_hook.py
 /usr/bin/python3 test_cw.py
 /usr/bin/python3 test_bar.py
+/usr/bin/python3 test_analyzer.py
+/usr/bin/python3 test_gaps.py
 /usr/bin/python3 test_install.py
 ```
 
@@ -152,7 +166,7 @@ Note: hooks capture *events*, not tokens/cost, so analytics cover activity
 | Path | What |
 |------|------|
 | `~/.claude-watch/events-YYYY-MM-DD.ndjson` | captured events (one per line) |
-| `~/.claude-watch/config.json` | `{ "muted": bool }` |
+| `~/.claude-watch/config.json` | `muted`, `muted_projects`, `notify_only_when_unfocused`, `notify_delay_seconds`, `volume`, `terminal_bell`, `sounds`, `suppress_filters`, `suppress_question_after_*`, `webhook`, … |
 | `~/.claude-watch/bar.log` | menu bar app stdout/stderr |
 | `~/Library/LaunchAgents/com.claudewatch.bar.plist` | login agent |
 

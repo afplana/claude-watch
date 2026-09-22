@@ -68,7 +68,25 @@ def _controlling_tty():
     return out if out.startswith("/dev/") else "/dev/" + out
 
 
-def normalize(raw, term="", term_session="", tty=""):
+def _git_branch(cwd):
+    """Best-effort current git branch; '' if unavailable. Bounded — never blocks."""
+    if not cwd or not os.path.isdir(cwd):
+        return ""
+    try:
+        out = subprocess.run(
+            ["git", "-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True, text=True, timeout=1,
+        )
+        if out.returncode != 0:
+            return ""
+        branch = out.stdout.strip()
+        return "" if branch in ("HEAD", "") else branch
+    except Exception:
+        return ""
+
+
+def normalize(raw, term="", term_session="", tty="", branch="",
+              tmux_pane="", zellij_session="", ghostty_surface=""):
     """Map a raw Claude Code hook payload to a flat event record.
 
     `term` is the TERM_PROGRAM of the terminal Claude runs in (captured in
@@ -103,6 +121,11 @@ def normalize(raw, term="", term_session="", tty=""):
         "term": term,
         "term_session": term_session,
         "tty": tty,
+        "branch": branch,
+        "transcript_path": raw.get("transcript_path", "") or "",
+        "tmux_pane": tmux_pane,
+        "zellij_session": zellij_session,
+        "ghostty_surface": ghostty_surface,
     }
 
 
@@ -118,11 +141,16 @@ def main():
         return  # nothing usable on stdin; stay invisible
     try:
         os.makedirs(DATA_DIR, exist_ok=True)
+        cwd = raw.get("cwd", "")
         record = normalize(
             raw,
             os.environ.get("TERM_PROGRAM", ""),
             os.environ.get("ITERM_SESSION_ID") or os.environ.get("TERM_SESSION_ID", ""),
             _controlling_tty(),
+            _git_branch(cwd),
+            os.environ.get("TMUX_PANE", ""),
+            os.environ.get("ZELLIJ_SESSION_NAME", ""),
+            os.environ.get("GHOSTTY_SURFACE_ID") or os.environ.get("GHOSTTY_SESSION_ID", ""),
         )
         with open(events_path(), "a") as fh:
             fh.write(json.dumps(record) + "\n")
